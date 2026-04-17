@@ -7,7 +7,6 @@ import {
 import {msg} from '@lingui/core/macro'
 import {useLingui} from '@lingui/react'
 import {Trans} from '@lingui/react/macro'
-import crypto from 'crypto'
 import {
   IDENTITY_CREDENTIAL_PLAINLOGIN,
   IDENTITY_VIEW,
@@ -25,6 +24,7 @@ import {cleanError, isNetworkError} from '#/lib/strings/errors'
 import {createFullHandle} from '#/lib/strings/handles'
 import {parseVerusIdLogin} from '#/lib/verus/login'
 import {logger} from '#/logger'
+import crypto from '#/platform/crypto'
 import {emitVerusIDLoginCompleted} from '#/state/events'
 import {useSetHasCheckedForStarterPack} from '#/state/preferences/used-starter-packs'
 import {useVerusIdLoginQuery} from '#/state/queries/verus/useVerusIdLoginQuery'

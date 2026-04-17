@@ -1,7 +1,15 @@
-// HACK
-// expo-modules-core tries to require('crypto') in uuid.web.js
-// and while it tries to detect web crypto before doing so, our
-// build fails when it tries to do this require. We use a babel
-// and tsconfig alias to direct it here
-// -prf
-export default crypto
+import 'react-native-get-random-values'
+
+// randomBytes implementation using getRandomValues (works on Hermes)
+function randomBytes(size: number): Buffer {
+  const bytes = new Uint8Array(size)
+  crypto.getRandomValues(bytes)
+  return Buffer.from(bytes)
+}
+
+const cryptoShim = {
+  randomBytes,
+  getRandomValues: (arr: Uint8Array) => crypto.getRandomValues(arr),
+}
+
+export default cryptoShim
