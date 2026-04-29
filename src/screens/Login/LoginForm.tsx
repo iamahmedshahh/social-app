@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react'
-import {Keyboard, type TextInput, View} from 'react-native'
+import {Keyboard, Linking, type TextInput, View} from 'react-native'
 import {
   ComAtprotoServerCreateSession,
   type ComAtprotoServerDescribeServer,
@@ -7,27 +7,16 @@ import {
 import {msg} from '@lingui/core/macro'
 import {useLingui} from '@lingui/react'
 import {Trans} from '@lingui/react/macro'
-import {
-  IDENTITY_CREDENTIAL_PLAINLOGIN,
-  IDENTITY_VIEW,
-  LOGIN_CONSENT_WEBHOOK_VDXF_KEY,
-  LoginConsentChallenge,
-  LoginConsentRequest,
-  RedirectUri,
-  RequestedPermission,
-  toBase58Check,
-} from 'verus-typescript-primitives'
+import {toBase58Check} from 'verus-typescript-primitives'
 
 import {LOCAL_DEV_VSKY_SERVER} from '#/lib/constants'
 import {useRequestNotificationsPermission} from '#/lib/notifications/notifications'
 import {cleanError, isNetworkError} from '#/lib/strings/errors'
 import {createFullHandle} from '#/lib/strings/handles'
-import {parseVerusIdLogin} from '#/lib/verus/login'
 import {logger} from '#/logger'
-import crypto from '#/platform/crypto'
 import {emitVerusIDLoginCompleted} from '#/state/events'
 import {useSetHasCheckedForStarterPack} from '#/state/preferences/used-starter-packs'
-import {useVerusIdLoginQuery} from '#/state/queries/verus/useVerusIdLoginQuery'
+import {useGenericLoginQuery} from '#/state/queries/verus/useGenericLoginQuery'
 import {useSessionApi} from '#/state/session'
 import {type VskySession} from '#/state/session/types'
 import {useLoggedOutViewControls} from '#/state/shell/logged-out'
@@ -45,7 +34,7 @@ import {Ticket_Stroke2_Corner0_Rounded as Ticket} from '#/components/icons/Ticke
 import {Loader} from '#/components/Loader'
 import {QrCodeInner} from '#/components/StarterPack/QrCode'
 import {Text} from '#/components/Typography'
-import {IS_IOS, IS_WEB} from '#/env'
+import {IS_IOS, IS_NATIVE, IS_WEB} from '#/env'
 import {VERUSSKY_CONFIG} from '#/env/verussky'
 import {FormContainer} from './FormContainer'
 
@@ -108,12 +97,14 @@ export const LoginForm = ({
     useRemoveVerusIdAccountLinkDialogControl()
 
   const [loginUri, setLoginUri] = useState<string>('')
-  const loginIdRef = useRef<string>('')
+  const [qrString, setQrString] = useState<string>('')
+  // useState instead of useRef so useGenericLoginQuery re-evaluates when requestId changes
+  const [requestId, setRequestId] = useState<string>('')
 
-  const {data: verusIdLoginResult, error: verusIdLoginError} =
-    useVerusIdLoginQuery({
-      requestId: loginIdRef.current,
-      enabled: isVerusIdLogin && loginIdRef.current !== '',
+  const {data: genericLoginResult, error: genericLoginError} =
+    useGenericLoginQuery({
+      requestId,
+      enabled: isVerusIdLogin && requestId !== '',
     })
 
   const clearVskySessionValues = () => {
@@ -121,69 +112,59 @@ export const LoginForm = ({
   }
 
   useEffect(() => {
-    // Get login URI here for the QR code and deeplink.
     const createAndSignLoginRequest = async () => {
       setIsProcessing(true)
       setLoginUri('')
+      setQrString('')
+      setRequestId('')
+
       try {
-        const randID = Buffer.from(crypto.randomBytes(20))
-        const challengeId = toBase58Check(randID, 102)
+        const randBytes = new Uint8Array(20)
+        global.crypto.getRandomValues(randBytes)
+        const randID = Buffer.from(randBytes)
+        const newRequestId = toBase58Check(randID, 102)
 
-        const details = new LoginConsentChallenge({
-          challenge_id: challengeId,
-          requested_access: [
-            new RequestedPermission(IDENTITY_VIEW.vdxfid),
-            new RequestedPermission(IDENTITY_CREDENTIAL_PLAINLOGIN.vdxfid),
-          ],
-          redirect_uris: [
-            new RedirectUri(
-              `${LOCAL_DEV_VSKY_SERVER}/api/v1/login/confirm-login`,
-              LOGIN_CONSENT_WEBHOOK_VDXF_KEY.vdxfid,
-            ),
-          ],
-          created_at: Math.floor(Date.now() / 1000),
-        })
-
-        // Sign the request using a signing server.
         const response = await fetch(
-          `${LOCAL_DEV_VSKY_SERVER}/api/v1/login/sign-login-request`,
+          `${LOCAL_DEV_VSKY_SERVER}/api/v2/genericlogin/sign-login-request`,
           {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(details.toJson()),
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({requestId: newRequestId}),
           },
         )
 
         if (!response.ok) {
-          logger.warn('Failed to sign the request', {
+          logger.warn('Failed to sign generic login request', {
             error: response.statusText,
           })
-          setError('Failed to sign the request using the signing server')
+          setError('Failed to sign the login request using the signing server')
           setIsProcessing(false)
           return
         }
 
         const res = await response.json()
+        console.log('LOGIN SERVER RESPONSE:', JSON.stringify(res))
 
         if (res.error) {
-          logger.warn('Failed to sign the request', {error: res.error})
-          setError('Failed to sign the request using the signing server')
+          logger.warn('Failed to sign generic login request', {
+            error: res.error,
+          })
+          setError('Failed to sign the login request using the signing server')
           setIsProcessing(false)
           return
         }
 
-        const signedRequest = new LoginConsentRequest(res)
-        setLoginUri(signedRequest.toWalletDeeplinkUri())
-        loginIdRef.current = challengeId
+        setLoginUri(res.deeplinkUri)
+        setQrString(res.qrstring)
+        setRequestId(newRequestId) // triggers useGenericLoginQuery to start polling
         setError('')
       } catch (e: any) {
         const errMsg = e.toString()
-        logger.warn('Failed to login', {error: errMsg})
+        logger.warn('Failed to create generic login request', {error: errMsg})
         setError(cleanError(errMsg))
-        loginIdRef.current = ''
+        setRequestId('')
       }
+
       setIsProcessing(false)
     }
 
@@ -223,11 +204,10 @@ export const LoginForm = ({
     setIsProcessing(true)
 
     try {
-      // try to guess the handle if the user just gave their own username
       let fullIdent = identifier
       if (
-        !identifier.includes('@') && // not an email
-        !identifier.includes('.') && // not a domain
+        !identifier.includes('@') &&
+        !identifier.includes('.') &&
         serviceDescription &&
         serviceDescription.availableUserDomains.length > 0
       ) {
@@ -270,8 +250,6 @@ export const LoginForm = ({
       }
 
       if (saveLoginWithVerusId) {
-        // Delay opening the dialog in order to allow for transitioning away from the login screen.
-        // Otherwise, the dialog does not appear.
         setTimeout(() => {
           updateVerusCredentialsControl.open({
             password: passwordValueRef.current,
@@ -279,9 +257,6 @@ export const LoginForm = ({
           })
         }, 750)
       } else if (openRemoveVerusIdLinkDialog) {
-        // Don't trigger the VerusID check if the user is going to remove their linked VerusID.
-        // Delay by a small amount to allow for the authenticated agent to be fetched,
-        // as non-authenticated agents can't fetch the linked VerusID via the posts.
         setTimeout(() => {
           removeVerusIdAccountLinkControl.open()
         }, 250)
@@ -312,8 +287,6 @@ export const LoginForm = ({
           logger.debug('Failed to sign in due to invalid credentials', {
             error: errMsg,
           })
-
-          // Fallback to standard login if the VerusSky login has invalid credentials.
           if (isVerusIdLogin) {
             verusIdLoginFailed.current = true
             setSaveLoginWithVerusId(true)
@@ -327,7 +300,9 @@ export const LoginForm = ({
             setError(_(msg`Incorrect username or password`))
           }
         } else if (isNetworkError(e)) {
-          logger.warn('Failed to sign in due to network error', {error: errMsg})
+          logger.warn('Failed to sign in due to network error', {
+            error: errMsg,
+          })
           setError(
             _(
               msg`Unable to contact your service. Please check your Internet connection.`,
@@ -341,59 +316,53 @@ export const LoginForm = ({
     }
   }
 
-  // startVskyLogin uses the deeplink and starts the checking for the login.
   const startVskyLogin = async () => {
-    if (isProcessing) {
-      return
+    if (isProcessing || !loginUri) return
+
+    if (IS_WEB) {
+      window.location.href = loginUri
+    } else {
+      try {
+        const canOpen = await Linking.canOpenURL(loginUri)
+        if (canOpen) {
+          await Linking.openURL(loginUri)
+        } else {
+          setError(
+            _(
+              msg`Unable to open Verus Mobile. Please ensure it is installed.`,
+            ),
+          )
+        }
+      } catch (e: any) {
+        logger.warn('Failed to open Verus Mobile deeplink', {
+          error: e.toString(),
+        })
+        setError(_(msg`Failed to open Verus Mobile.`))
+      }
     }
-    // Open the deeplink on the same tab so that the current navigation stack is saved.
-    window.location.href = loginUri
   }
 
-  // Handle retrieval of the login response
   useEffect(() => {
-    if (!verusIdLoginResult) {
-      return
-    }
+    if (!genericLoginResult) return
 
     try {
       setIsProcessing(true)
+
       vskySessionValueRef.current = {
         auth: '',
-        id: verusIdLoginResult.identity.identityaddress || '',
-        name: verusIdLoginResult.identity.name,
+        id: genericLoginResult.signingId,
+        name: genericLoginResult.identityName,
       }
 
-      const credentials = parseVerusIdLogin(verusIdLoginResult.loginResponse)
-
-      identifierValueRef.current = credentials.username
-      passwordValueRef.current = credentials.password
+      identifierValueRef.current = genericLoginResult.username
+      passwordValueRef.current = genericLoginResult.password
     } catch (e: any) {
-      const errMsg = e.toString()
-      let message = ''
-
-      if (errMsg.includes('Missing username')) {
-        message = `Missing username from VerusID sign in.`
-      } else if (errMsg.includes('Missing password')) {
-        message = `Missing password from VerusID sign in.`
-      } else if (
-        errMsg.includes('Invalid credential format') ||
-        errMsg.includes('Invalid credentials') ||
-        errMsg.includes('Missing sign in credentials')
-      ) {
-        message = `Missing username and password from VerusID sign in.`
-      }
-
-      message += ` Please sign in manually.`
-      setError(_(msg`${message}`))
-
+      setError(
+        _(msg`Failed to process VerusID login. Please sign in manually.`),
+      )
       verusIdLoginFailed.current = true
-
-      // Select to save the login as a way to update the failed VerusID login credentials.
       setSaveLoginWithVerusId(true)
-
       setIsVerusIdLogin(false)
-
       setIsProcessing(false)
       onAttemptFailed()
       return
@@ -402,28 +371,28 @@ export const LoginForm = ({
     setIsProcessing(false)
     onPressNext()
 
-    // onPressNext doesn't change so it is fine to exclude from the dependencies
     // eslint-disable-next-line react-compiler/react-compiler
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [verusIdLoginResult])
+  }, [genericLoginResult])
 
-  // Handle errors from fetching the VerusID login
   useEffect(() => {
-    if (!verusIdLoginError) {
-      return
-    }
+    if (!genericLoginError) return
 
-    const errMsg = verusIdLoginError.message
-    logger.warn('Failed to verify VerusSky login response', {error: errMsg})
+    const errMsg = (genericLoginError as Error).message
+    logger.warn('Failed to complete generic login', {error: errMsg})
 
-    if (errMsg.includes('Invalid login response')) {
+    if (errMsg.includes('No credential found in contentmultimap')) {
       setError(
-        _(msg`Invalid login response. Please try again or sign in manually.`),
+        _(
+          msg`No VerusID credentials found. Please sign in manually and save your login with VerusID.`,
+        ),
       )
-    } else if (
-      errMsg.includes('Unable to fetch details on the signing identity')
-    ) {
-      setError(_(msg`Unable to verify the signer of the login.`))
+    } else if (errMsg.includes('decrypt')) {
+      setError(
+        _(
+          msg`Failed to decrypt VerusID credentials. Please sign in manually.`,
+        ),
+      )
     } else {
       setError(cleanError(errMsg))
     }
@@ -431,10 +400,9 @@ export const LoginForm = ({
     verusIdLoginFailed.current = true
     setSaveLoginWithVerusId(true)
     setIsVerusIdLogin(false)
-
     setIsProcessing(false)
     onAttemptFailed()
-  }, [verusIdLoginError, _, setError, onAttemptFailed])
+  }, [genericLoginError, _, setError, onAttemptFailed])
 
   return (
     <FormContainer testID="loginForm" titleText={<Trans>Sign in</Trans>}>
@@ -447,7 +415,6 @@ export const LoginForm = ({
           onSelectServiceUrl={url => {
             setServiceUrl(url)
             verusIdLoginFailed.current = false
-            // If the service switches, then any existing VerusID login should be cleared.
             clearVskySessionValues()
           }}
           onOpenDialog={onPressSelectService}
@@ -482,7 +449,7 @@ export const LoginForm = ({
                   onSubmitEditing={() => {
                     passwordRef.current?.focus()
                   }}
-                  blurOnSubmit={false} // prevents flickering due to onSubmitEditing going to next field
+                  blurOnSubmit={false}
                   editable={!isProcessing}
                   accessibilityHint={_(
                     msg`Enter the username or email address you used when you created your account`,
@@ -508,17 +475,12 @@ export const LoginForm = ({
                     if (errorField) setErrorField('none')
                   }}
                   onSubmitEditing={onPressNext}
-                  blurOnSubmit={false} // HACK: https://github.com/facebook/react-native/issues/21911#issuecomment-558343069 Keyboard blur behavior is now handled in onSubmitEditing
+                  blurOnSubmit={false}
                   editable={!isProcessing}
                   accessibilityHint={_(msg`Enter your password`)}
                   onLayout={ios(() => {
                     if (hasFocusedOnce.current) return
                     hasFocusedOnce.current = true
-                    // kinda dumb, but if we use `autoFocus` to focus
-                    // the username input, it happens before the password
-                    // input gets rendered. this breaks the password autofill
-                    // on iOS (it only does the username part). delaying
-                    // it until both inputs are rendered fixes the autofill -sfn
                     identifierRef.current?.focus()
                   })}
                 />
@@ -531,7 +493,6 @@ export const LoginForm = ({
                   color="secondary"
                   style={[
                     a.rounded_sm,
-                    // t.atoms.bg_contrast_100,
                     {marginLeft: 'auto', left: 6, padding: 6},
                     a.z_10,
                   ]}>
@@ -575,12 +536,21 @@ export const LoginForm = ({
             <Trans>VerusID Sign in</Trans>
           </TextField.LabelText>
           <Text
-            style={[a.text_sm, t.atoms.text_contrast_medium, a.mt_xs, a.mb_sm]}>
-            <Trans>Scan the QR code below or press Sign in to continue</Trans>
+            style={[
+              a.text_sm,
+              t.atoms.text_contrast_medium,
+              a.mt_xs,
+              a.mb_sm,
+            ]}>
+            <Trans>
+              {IS_NATIVE
+                ? 'Press Sign in to open Verus Mobile'
+                : 'Scan the QR code below or press Sign in to continue'}
+            </Trans>
           </Text>
-          {loginUri && (
+          {IS_WEB && qrString && (
             <View style={[a.align_center, a.py_lg]}>
-              <QrCodeInner link={loginUri} useBackupSVG={false} />
+              <QrCodeInner link={qrString} useBackupSVG={false} />
             </View>
           )}
         </View>
@@ -600,8 +570,8 @@ export const LoginForm = ({
               autoCorrect={false}
               autoComplete="one-time-code"
               returnKeyType="done"
-              blurOnSubmit={false} // prevents flickering due to onSubmitEditing going to next field
-              value={authFactorToken} // controlled input due to uncontrolled input not receiving pasted values properly
+              blurOnSubmit={false}
+              value={authFactorToken}
               onChangeText={text => {
                 setAuthFactorToken(text)
                 if (errorField) setErrorField('none')
@@ -668,7 +638,9 @@ export const LoginForm = ({
               size="large"
               onPress={() => {
                 setIsVerusIdLogin(!isVerusIdLogin)
-                setLoginUri('') // Clear the link so that the QR code doesn't appear briefly
+                setLoginUri('')
+                setQrString('')
+                setRequestId('')
                 setError('')
               }}>
               <ButtonText>

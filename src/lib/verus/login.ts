@@ -5,6 +5,7 @@ import {
 } from 'verus-typescript-primitives'
 
 export function parseVerusIdLogin(login: LoginConsentResponse): {
+
   username: string
   password: string
 } {

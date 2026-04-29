@@ -404,6 +404,7 @@ export function HeaderStandardButtons({
 
               <MessageProfileButton profile={profile} />
 
+              {/* LEGACY: Donate button was previously only shown when following
               {linkedVerusID && (
                 <Button
                   testID="donateBtn"
@@ -416,14 +417,37 @@ export function HeaderStandardButtons({
                   </ButtonText>
                 </Button>
               )}
+              */}
             </>
           )}
 
+          {/* LEGACY: Donate dialog was previously only shown when linkedVerusID was present and user was following
           {linkedVerusID && (
             <VerusIDDonationDialog
               control={donationDialogControl}
               identity={linkedVerusID.identity}
             />
+          )}
+          */}
+
+          {/* Donate button now visible regardless of login or follow status */}
+          {linkedVerusID && !isMe && (
+            <>
+              <Button
+                testID="donateBtn"
+                size="small"
+                color="secondary"
+                label={_(msg`Donate`)}
+                onPress={() => donationDialogControl.open()}>
+                <ButtonText>
+                  <Trans>Donate</Trans>
+                </ButtonText>
+              </Button>
+              <VerusIDDonationDialog
+                control={donationDialogControl}
+                identity={linkedVerusID.identity}
+              />
+            </>
           )}
 
           {(!minimal || !profile.viewer?.following) && (

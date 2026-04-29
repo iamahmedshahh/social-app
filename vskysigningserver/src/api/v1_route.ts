@@ -1,17 +1,17 @@
-import {Router} from 'express'
+// import {Router} from 'express'
 
-import {identityUpdatesRouter} from './v1/identityupdates'
-import {invoicesRouter} from './v1/invoices'
-import {loginRouter} from './v1/login'
-import {provisioningRouter} from './v1/provisioning'
-import {serviceInfoRouter} from './v1/service-info'
+// import {identityUpdatesRouter} from './v1/identityupdates'
+// import {invoicesRouter} from './v1/invoices'
+// import {loginRouter} from './v1/login'
+// import {provisioningRouter} from './v1/provisioning'
+// import {serviceInfoRouter} from './v1/service-info'
 
-const router = Router()
+// const router = Router()
 
-router.use('/login', loginRouter)
-router.use('/provisioning', provisioningRouter)
-router.use('/identityupdates', identityUpdatesRouter)
-router.use('/invoices', invoicesRouter)
-router.use('/service-info', serviceInfoRouter)
+// router.use('/login', loginRouter)
+// router.use('/provisioning', provisioningRouter)
+// router.use('/identityupdates', identityUpdatesRouter)
+// router.use('/invoices', invoicesRouter)
+// router.use('/service-info', serviceInfoRouter)
 
-export {router as v1Router}
+// export {router as v1Router}

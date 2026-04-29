@@ -60,9 +60,9 @@ const getConfigPath = (chainName: string): string => {
 const parseConfigFile = (filePath: string): VerusDaemonConfig => {
   const config: VerusDaemonConfig = {
     rpchost: '127.0.0.1',
-    rpcport: '18843',
-    rpcuser: '',
-    rpcpassword: '',
+    rpcport: '27486',
+    rpcuser: 'user',
+    rpcpassword: 'pass',
   }
 
   const file = fs.readFileSync(filePath, 'utf-8')

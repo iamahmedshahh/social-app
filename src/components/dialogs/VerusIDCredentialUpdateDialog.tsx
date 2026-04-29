@@ -1,27 +1,13 @@
 import {useCallback, useEffect, useRef, useState} from 'react'
-import {View} from 'react-native'
+import {Linking, View} from 'react-native'
 import {msg} from '@lingui/core/macro'
 import {useLingui} from '@lingui/react'
 import {Trans} from '@lingui/react/macro'
-import crypto from 'crypto'
-import {
-  BigNumber,
-  Credential,
-  DATA_TYPE_OBJECT_CREDENTIAL,
-  IDENTITY_CREDENTIAL,
-  IDENTITY_CREDENTIAL_PLAINLOGIN,
-  IdentityUpdateRequest,
-  IdentityUpdateRequestDetails,
-  PROOFS_CONTROLLER_BLUESKY,
-  ResponseUri,
-} from 'verus-typescript-primitives'
+import {toBase58Check} from 'verus-typescript-primitives'
 
 import {LOCAL_DEV_VSKY_SERVER} from '#/lib/constants'
 import {cleanError, isNetworkError} from '#/lib/strings/errors'
 import {logger} from '#/logger'
-import {useLinkedVerusIDQuery} from '#/state/queries/verus/useLinkedVerusIdQuery'
-import {useSigningAddressQuery} from '#/state/queries/verus/useSigningServiceInfoQuery'
-import {useVerusIdUpdateQuery} from '#/state/queries/verus/useVerusIdUpdateQuery'
 import {useSession} from '#/state/session'
 import {atoms as a, web} from '#/alf'
 import {Admonition} from '#/components/Admonition'
@@ -46,55 +32,15 @@ export function useVerusIdCredentialUpdateDialogControl() {
 
 export function VerusIDCredentialUpdateDialog() {
   const {_} = useLingui()
-  const {currentAccount} = useSession()
   const control = useVerusIdCredentialUpdateDialogControl()
-  const accountLinkingControl =
-    useGlobalDialogsControlContext().verusIdAccountLinkingDialogControl
-  const removeAccountLinkControl =
-    useGlobalDialogsControlContext().removeVerusIdAccountLinkDialogControl
-  const openRemoveAccountLink = control.value?.openRemoveAccountLinkDialog
-  const checkVerusIDAccountLink =
-    control.value?.checkVerusIDAccountLink ?? false
-  const {data: linkedVerusID} = useLinkedVerusIDQuery(
-    PROOFS_CONTROLLER_BLUESKY.vdxfid,
-    currentAccount?.did,
-    checkVerusIDAccountLink && control.control.isOpen,
-  )
 
-  const onClose = useCallback(async () => {
+  const onClose = useCallback(() => {
     control.clear()
-
-    if (openRemoveAccountLink) {
-      removeAccountLinkControl.open()
-      return
-    }
-
-    if (!currentAccount || currentAccount.type !== 'vsky') {
-      return
-    }
-
-    const identity = currentAccount.name + '@'
-
-    if (
-      checkVerusIDAccountLink &&
-      (!linkedVerusID || linkedVerusID.identity !== identity)
-    ) {
-      accountLinkingControl.open({showSettingsMessage: true})
-    }
-  }, [
-    control,
-    openRemoveAccountLink,
-    currentAccount,
-    linkedVerusID,
-    removeAccountLinkControl,
-    accountLinkingControl,
-    checkVerusIDAccountLink,
-  ])
+  }, [control])
 
   return (
     <Dialog.Outer control={control.control} onClose={onClose}>
       <Dialog.Handle />
-
       <Dialog.ScrollableInner
         label={_(msg`Update VerusID Sign in Credentials`)}
         style={web({maxWidth: 400})}>
@@ -112,102 +58,52 @@ function Inner({initialPassword}: {initialPassword?: string}) {
 
   const [stage, setStage] = useState(Stages.UpdateCredentials)
   const [isProcessing, setIsProcessing] = useState(false)
-  const [name, setName] = useState(
-    currentAccount?.type === 'vsky' ? currentAccount.name + '@' : '',
-  )
   const [email, setEmail] = useState(currentAccount?.email || '')
   const [password, setPassword] = useState(initialPassword || '')
   const [error, setError] = useState('')
   const [deeplinkUri, setDeeplinkUri] = useState('')
-  const requestIdRef = useRef<string>('')
+  const [qrString, setQrString] = useState('')
+  const [requestId, setRequestId] = useState('')
 
-  const {data: signingServiceInfo} = useSigningAddressQuery()
+  // Identity name from current session
+  const identityName =
+    currentAccount?.type === 'vsky' ? currentAccount.name + '@' : ''
 
-  const {
-    data: updateResponse,
-    error: updateError,
-    isError: isUpdateError,
-  } = useVerusIdUpdateQuery({
-    requestId: requestIdRef.current,
-    enabled: stage === Stages.AwaitingResponse && !!requestIdRef.current,
-  })
-
-  const uiStrings = {
-    UpdateCredentials: {
-      title:
-        currentAccount?.type === 'vsky'
-          ? _(msg`Update VerusID sign in`)
-          : _(msg`Save sign in with VerusID`),
-      message:
-        currentAccount?.type === 'vsky'
-          ? _(msg`Update the sign in credentials stored in your VerusID.`)
-          : _(
-              msg`Add your sign in credentials to your VerusID for seamless logins.`,
-            ),
-    },
-    AwaitingResponse: {
-      title: _(msg`Awaiting confirmation`),
-      message: _(
-        msg`Scan the QR code below or press Open Verus wallet to confirm the update.`,
-      ),
-    },
-    Done: {
-      title: _(msg`Update confirmed`),
-      message: _(
-        msg`Your VerusID sign in credentials update has been confirmed and will be applied soon.`,
-      ),
-    },
-  }
-
-  // Handle the credential update
+  // Poll for update response
   useEffect(() => {
-    if (updateResponse && updateResponse.details.containsTxid()) {
-      setStage(Stages.Done)
-      setIsProcessing(false)
-      logger.debug('Successfully updated VerusSky credentials')
-    }
-  }, [updateResponse])
+    if (stage !== Stages.AwaitingResponse || !requestId) return
 
-  // Handle the errors for the credential update
-  useEffect(() => {
-    if (isUpdateError) {
-      const errMsg =
-        updateError?.toString() || _(msg`Failed to update credentials`)
-      logger.warn('Error while checking for credential update response', {
-        error: errMsg,
-      })
-      if (isNetworkError(updateError)) {
-        setError(
-          _(
-            msg`Unable to contact the service. Please check your Internet connection.`,
-          ),
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(
+          `${LOCAL_DEV_VSKY_SERVER}/api/v2/identityupdates/get-update-response?requestId=${encodeURIComponent(requestId)}`,
         )
-      } else {
-        setError(cleanError(errMsg))
+
+        if (res.status === 200) {
+          clearInterval(interval)
+          setStage(Stages.Done)
+          setIsProcessing(false)
+          logger.debug('Successfully updated VerusSky credentials')
+        }
+      } catch (e) {
+        // keep polling
       }
-      setStage(Stages.UpdateCredentials)
-      setIsProcessing(false)
-    }
-  }, [isUpdateError, updateError, _])
+    }, 1500)
+
+    return () => clearInterval(interval)
+  }, [stage, requestId])
 
   const onUpdateCredentials = async () => {
-    if (!name.trim()) {
-      setError(_(msg`Please enter your VerusID name`))
-      return
-    }
-
     if (!email.trim()) {
       setError(_(msg`Please enter your email`))
       return
     }
-
     if (!password.trim()) {
       setError(_(msg`Please enter your password`))
       return
     }
-
-    if (!signingServiceInfo?.signingAddress) {
-      setError(_(msg`Unable to get the signing service identity address`))
+    if (!identityName) {
+      setError(_(msg`No VerusID identity found for this account`))
       return
     }
 
@@ -215,159 +111,101 @@ function Inner({initialPassword}: {initialPassword?: string}) {
     setIsProcessing(true)
 
     try {
-      // Create the identity update request details.
-      const identityUpdateDetailCLIJson = {
-        name: name,
-        contentmultimap: {
-          [IDENTITY_CREDENTIAL.vdxfid]: [
-            {
-              [DATA_TYPE_OBJECT_CREDENTIAL.vdxfid]: {
-                version: Credential.VERSION_CURRENT.toNumber(),
-                credentialkey: IDENTITY_CREDENTIAL_PLAINLOGIN.vdxfid,
-                credential: [email, password],
-                scopes: [signingServiceInfo.signingAddress],
-              },
-            },
-          ],
+      // Generate a requestId
+      const randBytes = new Uint8Array(20)
+      global.crypto.getRandomValues(randBytes)
+      const newRequestId = toBase58Check(Buffer.from(randBytes), 102)
+
+      const response = await fetch(
+        `${LOCAL_DEV_VSKY_SERVER}/api/v2/identityupdates/sign-update-request`,
+        {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            requestId: newRequestId,
+            identityName,
+            email,
+            password,
+          }),
         },
-      }
-
-      const randID = Buffer.from(crypto.randomBytes(20))
-      const updateRequestId = new BigNumber(randID)
-      // Generate the timestamp in seconds, since that's what block times are in.
-      const createdAt = new BigNumber((Date.now() / 1000).toFixed(0))
-
-      const details = IdentityUpdateRequestDetails.fromCLIJson(
-        identityUpdateDetailCLIJson,
       )
 
-      // Add the response URIs.
-      details.responseuris = [
-        ResponseUri.fromUriString(
-          `${LOCAL_DEV_VSKY_SERVER}/api/v1/identityupdates/confirm-credential-update`,
-          ResponseUri.TYPE_POST,
-        ),
-      ]
-
-      // IMPORTANT: Set the flag to indicate that response URIs are present
-      if (!details.containsResponseUris()) {
-        details.toggleContainsResponseUris()
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({error: response.statusText}))
+        throw new Error(err.error || 'Failed to sign update request')
       }
 
-      details.requestid = updateRequestId
-      details.createdat = createdAt
+      const res = await response.json()
 
-      // Get the ID as a string by converting the details to JSON,
-      // since we need to do that anyways to send the details.
-      const detailsJson = details.toJson()
-      const updateRequestIdString = detailsJson.requestid!
+      if (res.error) throw new Error(res.error)
 
-      // Send the update request.
-      if (IS_WEB) {
-        // Web implementation using signing server
-        const response = await fetch(
-          `${LOCAL_DEV_VSKY_SERVER}/api/v1/identityupdates/update-credentials`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(detailsJson),
-          },
-        )
-
-        if (!response.ok) {
-          logger.warn('Failed to initiate credential update', {
-            status: response.status,
-            statusText: response.statusText,
-          })
-          setError(_(msg`Failed to update credentials`))
-          setIsProcessing(false)
-          return
-        }
-
-        const res = await response.json()
-
-        if (res.error) {
-          logger.warn('Failed to get signed identity update request', {
-            error: res.error,
-          })
-          setError(_(msg`Failed to initiate credential update`))
-          setIsProcessing(false)
-          return
-        }
-
-        if (res) {
-          const signedRequest = IdentityUpdateRequest.fromJson(res)
-          setDeeplinkUri(signedRequest.toWalletDeeplinkUri())
-
-          requestIdRef.current = updateRequestIdString
-          setStage(Stages.AwaitingResponse)
-        } else {
-          logger.warn('Failed to get signed identity update request', {
-            error: 'No URI or requestId returned',
-          })
-          setError(_(msg`Failed to initiate credential update`))
-          setIsProcessing(false)
-        }
-      } else if (IS_NATIVE) {
-        // Mobile implementation will be different
-        // This is a placeholder for the actual implementation
-        setError(_(msg`Mobile support coming soon`))
-        setIsProcessing(false)
-      }
+      setDeeplinkUri(res.deeplinkUri)
+      setQrString(res.qrstring)
+      setRequestId(newRequestId)
+      setStage(Stages.AwaitingResponse)
     } catch (e: any) {
       const errMsg = e.toString()
-      logger.warn('Failed to update Verus ID credentials', {error: e})
+      logger.warn('Failed to initiate credential update', {error: errMsg})
       if (isNetworkError(e)) {
-        setError(
-          _(
-            msg`Unable to contact the service. Please check your Internet connection.`,
-          ),
-        )
+        setError(_(msg`Unable to contact the service. Please check your Internet connection.`))
       } else {
         setError(cleanError(errMsg))
       }
       setIsProcessing(false)
     }
-    setIsProcessing(false)
   }
 
-  const onOpenDeeplink = () => {
-    if (deeplinkUri) {
+  const onOpenDeeplink = async () => {
+    if (!deeplinkUri) return
+
+    if (IS_WEB) {
       window.location.href = deeplinkUri
+    } else {
+      try {
+        const canOpen = await Linking.canOpenURL(deeplinkUri)
+        if (canOpen) {
+          await Linking.openURL(deeplinkUri)
+        } else {
+          setError(_(msg`Unable to open Verus Mobile. Please ensure it is installed.`))
+        }
+      } catch (e: any) {
+        logger.warn('Failed to open Verus Mobile deeplink', {error: e.toString()})
+        setError(_(msg`Failed to open Verus Mobile.`))
+      }
     }
+  }
+
+  const uiStrings = {
+    [Stages.UpdateCredentials]: {
+      title: currentAccount?.type === 'vsky'
+        ? _(msg`Update VerusID sign in`)
+        : _(msg`Save sign in with VerusID`),
+      message: currentAccount?.type === 'vsky'
+        ? _(msg`Update the sign in credentials stored in your VerusID.`)
+        : _(msg`Add your sign in credentials to your VerusID for seamless logins.`),
+    },
+    [Stages.AwaitingResponse]: {
+      title: _(msg`Awaiting confirmation`),
+      message: IS_NATIVE
+        ? _(msg`Press Open Verus Mobile to confirm the credential update.`)
+        : _(msg`Scan the QR code below or press Open Verus Wallet to confirm.`),
+    },
+    [Stages.Done]: {
+      title: _(msg`Update confirmed`),
+      message: _(msg`Your VerusID sign in credentials have been updated.`),
+    },
   }
 
   return (
     <View style={[a.gap_xl]}>
       <View style={[a.gap_sm]}>
         <Text style={[a.font_bold, a.text_2xl]}>{uiStrings[stage].title}</Text>
-
-        <Text style={[a.text_md, a.leading_snug]}>
-          {uiStrings[stage].message}
-        </Text>
-
+        <Text style={[a.text_md, a.leading_snug]}>{uiStrings[stage].message}</Text>
         {error ? <Admonition type="error">{error}</Admonition> : null}
       </View>
 
-      {stage === Stages.UpdateCredentials ? (
+      {stage === Stages.UpdateCredentials && (
         <View style={[a.gap_md]}>
-          <View>
-            <TextField.LabelText>
-              <Trans>VerusID Name</Trans>
-            </TextField.LabelText>
-            <TextField.Root>
-              <TextField.Input
-                label={_(msg`VerusID Name`)}
-                placeholder={_(msg`Alice@`)}
-                value={name}
-                onChangeText={setName}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-            </TextField.Root>
-          </View>
           <View>
             <TextField.LabelText>
               <Trans>Email</Trans>
@@ -391,7 +229,7 @@ function Inner({initialPassword}: {initialPassword?: string}) {
             <TextField.Root>
               <TextField.Input
                 label={_(msg`Password`)}
-                placeholder={_(msg`At least 8 characters`)}
+                placeholder={_(msg`Your Bluesky password`)}
                 value={password}
                 onChangeText={setPassword}
                 secureTextEntry
@@ -401,58 +239,62 @@ function Inner({initialPassword}: {initialPassword?: string}) {
             </TextField.Root>
           </View>
         </View>
-      ) : stage === Stages.AwaitingResponse ? (
-        <>
-          {deeplinkUri && (
-            <View style={[a.align_center, a.py_lg]}>
-              <QrCodeInner link={deeplinkUri} useBackupSVG={false} />
-            </View>
-          )}
-        </>
-      ) : null}
+      )}
+
+      {stage === Stages.AwaitingResponse && IS_WEB && qrString && (
+        <View style={[a.align_center, a.py_lg]}>
+          <QrCodeInner link={qrString} useBackupSVG={false} />
+        </View>
+      )}
 
       <View style={[a.gap_sm]}>
-        {stage === Stages.UpdateCredentials ? (
+        {stage === Stages.UpdateCredentials && (
+          <Button
+            label={_(msg`Update credentials`)}
+            color="primary"
+            size="large"
+            disabled={isProcessing}
+            onPress={onUpdateCredentials}>
+            <ButtonText>
+              <Trans>Update credentials</Trans>
+            </ButtonText>
+            {isProcessing && <ButtonIcon icon={Loader} />}
+          </Button>
+        )}
+
+        {stage === Stages.AwaitingResponse && (
           <>
             <Button
-              label={_(msg`Update credentials`)}
-              color="primary"
-              size="large"
-              disabled={isProcessing}
-              onPress={onUpdateCredentials}>
-              <ButtonText>
-                <Trans>Update credentials</Trans>
-              </ButtonText>
-              {isProcessing && <ButtonIcon icon={Loader} />}
-            </Button>
-            {IS_NATIVE && (
-              <Button
-                label={_(msg`Cancel`)}
-                color="secondary"
-                size="large"
-                disabled={isProcessing}
-                onPress={() => control.close()}>
-                <ButtonText>
-                  <Trans>Cancel</Trans>
-                </ButtonText>
-              </Button>
-            )}
-          </>
-        ) : stage === Stages.AwaitingResponse ? (
-          <>
-            <Button
-              label={_(msg`Open credential update deeplink`)}
+              label={_(msg`Open Verus Mobile`)}
               color="primary"
               size="large"
               disabled={isProcessing}
               onPress={onOpenDeeplink}>
               <ButtonText>
-                <Trans>Open Verus Wallet</Trans>
+                {IS_NATIVE
+                  ? <Trans>Open Verus Mobile</Trans>
+                  : <Trans>Open Verus Wallet</Trans>}
               </ButtonText>
               {isProcessing && <ButtonIcon icon={Loader} />}
             </Button>
+            <Button
+              label={_(msg`Cancel`)}
+              color="secondary"
+              size="large"
+              onPress={() => {
+                setStage(Stages.UpdateCredentials)
+                setRequestId('')
+                setDeeplinkUri('')
+                setQrString('')
+              }}>
+              <ButtonText>
+                <Trans>Cancel</Trans>
+              </ButtonText>
+            </Button>
           </>
-        ) : stage === Stages.Done ? (
+        )}
+
+        {stage === Stages.Done && (
           <Button
             label={_(msg`Close`)}
             color="primary"
@@ -462,7 +304,7 @@ function Inner({initialPassword}: {initialPassword?: string}) {
               <Trans>Close</Trans>
             </ButtonText>
           </Button>
-        ) : null}
+        )}
       </View>
     </View>
   )
