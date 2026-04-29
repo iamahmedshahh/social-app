@@ -54,7 +54,7 @@ identityUpdateRouter.post('/sign-update-request', async (req, res) => {
     const systemID = await getSystemID()
 
     // Build the credential object — Verus Mobile will encrypt this
-    const credential = new Credential({
+    const _credential = new Credential({
       version: Credential.VERSION_CURRENT,
       credentialKey: IDENTITY_CREDENTIAL_PLAINLOGIN.vdxfid,
       credential: [email, password],
