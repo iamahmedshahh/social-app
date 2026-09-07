@@ -1,36 +1,56 @@
 import {useState} from 'react'
 import {View} from 'react-native'
 import {RichText} from '@atproto/api'
-import {msg} from '@lingui/core/macro'
-import {useLingui} from '@lingui/react'
-import {Trans} from '@lingui/react/macro'
-import {useQueryClient} from '@tanstack/react-query'
+import {Trans, useLingui} from '@lingui/react/macro'
+import {useMutation, useQueryClient} from '@tanstack/react-query'
 import {nanoid} from 'nanoid/non-secure'
-import {PROOFS_CONTROLLER_BLUESKY} from 'verus-typescript-primitives'
+import {
+  type GenericRequest,
+  PROOFS_CONTROLLER_BLUESKY,
+} from 'verus-typescript-primitives'
 
 import * as apilib from '#/lib/api/index'
+import {cleanError, isNetworkError} from '#/lib/strings/errors'
 import {shortenLinks} from '#/lib/strings/rich-text-manip'
+import {isIAddress, processIAddress} from '#/lib/verus/addresses'
+import {generateAccountLinkingRequestOrdinals} from '#/lib/verus/requests/accountLinking'
+import {createAndSignGenericRequest} from '#/lib/verus/requests/genericRequest'
+import {logger} from '#/logger'
 import {useVerusService} from '#/state/preferences'
 import {usePostDeleteMutation} from '#/state/queries/post'
 import {createPostgateRecord} from '#/state/queries/postgate/util'
+import {useAccountLinkingResponseQuery} from '#/state/queries/verus/useAccountLinkingResponseQuery'
 import {
   createLinkedVerusIDQueryKey,
   useLinkedVerusIDQuery,
 } from '#/state/queries/verus/useLinkedVerusIdQuery'
 import {useAgent, useSession} from '#/state/session'
-import {atoms as a, web} from '#/alf'
+import {atoms as a, useTheme, web} from '#/alf'
 import {Admonition} from '#/components/Admonition'
 import {Button, ButtonIcon, ButtonText} from '#/components/Button'
 import * as Dialog from '#/components/Dialog'
 import {useGlobalDialogsControlContext} from '#/components/dialogs/Context'
 import * as TextField from '#/components/forms/TextField'
+import {
+  ChevronBottom_Stroke2_Corner0_Rounded as ChevronBottomIcon,
+  ChevronTop_Stroke2_Corner0_Rounded as ChevronTopIcon,
+} from '#/components/icons/Chevron'
 import {Loader} from '#/components/Loader'
+import {QrCodeInner} from '#/components/StarterPack/QrCode'
 import {Text} from '#/components/Typography'
+import {DEFAULT_CHAIN, IS_NATIVE, IS_WEB} from '#/env'
 
 enum Stages {
-  PreparingLinking = 'PreparingLinking',
-  SigningLinking = 'SigningLinking',
+  Intro = 'Intro',
+  AwaitingResponse = 'AwaitingResponse',
+  ConfirmPost = 'ConfirmPost',
   Done = 'Done',
+}
+
+function normalizeVerusIdInput(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.includes('@') || isIAddress(trimmed)) return trimmed
+  return `${trimmed}@`
 }
 
 export function useVerusIdAccountLinkingDialogControl() {
@@ -38,10 +58,9 @@ export function useVerusIdAccountLinkingDialogControl() {
 }
 
 export function VerusIDAccountLinkingDialog() {
-  const {_} = useLingui()
+  const {t: l} = useLingui()
   const accountLinkControl = useVerusIdAccountLinkingDialogControl()
   const passedOnClose = accountLinkControl.value?.onClose
-  const [stage, setStage] = useState(Stages.PreparingLinking)
 
   const onClose = () => {
     accountLinkControl.clear()
@@ -49,29 +68,13 @@ export function VerusIDAccountLinkingDialog() {
   }
 
   return (
-    <Dialog.Outer
-      control={accountLinkControl.control}
-      onClose={onClose}
-      nativeOptions={{
-        preventDismiss: stage === Stages.SigningLinking,
-      }}
-      webOptions={{
-        onBackgroundPress: () => {
-          // Don't allow closing by background press as the user will navigate
-          // back by clicking the background.
-          if (stage !== Stages.SigningLinking) {
-            accountLinkControl.control.close()
-          }
-        },
-      }}>
+    <Dialog.Outer control={accountLinkControl.control} onClose={onClose}>
       <Dialog.Handle />
 
       <Dialog.ScrollableInner
-        label={_(msg`Link VerusID to Profile`)}
+        label={l`Link VerusID to Profile`}
         style={web({maxWidth: 400})}>
         <Inner
-          stage={stage}
-          setStage={setStage}
           showSettingsMessage={accountLinkControl.value?.showSettingsMessage}
         />
         <Dialog.Close />
@@ -80,16 +83,9 @@ export function VerusIDAccountLinkingDialog() {
   )
 }
 
-function Inner({
-  stage,
-  setStage,
-  showSettingsMessage,
-}: {
-  stage: Stages
-  setStage: (stage: Stages) => void
-  showSettingsMessage?: boolean
-}) {
-  const {_} = useLingui()
+function Inner({showSettingsMessage}: {showSettingsMessage?: boolean}) {
+  const t = useTheme()
+  const {t: l} = useLingui()
   const {currentAccount} = useSession()
   const {verusIdInterface} = useVerusService()
   const control = Dialog.useDialogContext()
@@ -102,113 +98,46 @@ function Inner({
     linkIdentifier,
     currentAccount?.did,
   )
-  const [isProcessing, setIsProcessing] = useState(false)
-  const [name, setName] = useState(
-    currentAccount?.type === 'vsky' ? currentAccount.name + '@' : '',
-  )
+
+  const suggestedRfqn =
+    currentAccount?.type === 'vsky' ? currentAccount.name + '@' : ''
+  const [rfqn, setRfqn] = useState(suggestedRfqn)
   const [detailsToSign, setDetailsToSign] = useState('')
-  const [signature, setSignature] = useState('')
-  const [error, setError] = useState('')
+  const [request, setRequest] = useState<GenericRequest | null>(null)
+  const [showAwaitingResponse, setShowAwaitingResponse] = useState(false)
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [showRawPost, setShowRawPost] = useState(false)
+  const [formError, setFormError] = useState('')
 
-  const uiStrings = {
-    PreparingLinking: {
-      title: linkedVerusID
-        ? _(msg`Update linked VerusID`)
-        : _(msg`Link VerusID to account`),
-      message: linkedVerusID
-        ? _(
-            msg`The VerusID currently linked to this account is ${linkedVerusID.identity}.`,
-          )
-        : _(msg`Link your VerusID to this account to verify your identity.`),
-    },
-    SigningLinking: {
-      title: _(msg`Sign the linking details`),
-      message: null, // Use specific formatting instead for this section to allow for bolding
-    },
-    Done: {
-      title: _(msg`Linking complete`),
-      message: _(
-        msg`Your VerusID ${name} has been successfully linked to this account.`,
-      ),
-    },
-  }
+  const {
+    data: linkingResponse,
+    error: requestError,
+    isError: isLinkingResponseError,
+  } = useAccountLinkingResponseQuery({
+    request,
+    rfqn,
+    detailsToSign,
+    enabled: showAwaitingResponse && !!request,
+  })
 
-  const onPrepareLink = () => {
-    if (!name.trim()) {
-      setError(_(msg`Please enter your VerusID name.`))
-      return
-    }
+  // Structures how the post text appears. This and the structuring below in
+  // `detailsToSign` together should match what `findVerusIdLink()` checks.
+  const formatPostText = (signature: string) => `${detailsToSign}:${signature}`
 
-    const handle = currentAccount?.handle
-
-    if (!handle || !handle.trim()) {
-      setError(_(msg`Unable to link account with no handle.`))
-      return
-    }
-
-    setError('')
-    setIsProcessing(true)
-
-    try {
-      const details = `${linkIdentifier} 1: controller of VerusID '${name}' controls ${handle}`
-      setDetailsToSign(details)
-      setStage(Stages.SigningLinking)
-    } catch (e: unknown) {
-      setError(_(msg`Failed to prepare linking details.`))
-    } finally {
-      setIsProcessing(false)
-    }
-  }
-
-  const onSubmitSignature = async () => {
-    if (!signature.trim()) {
-      setError(_(msg`Please enter the signature.`))
-      return
-    }
-
-    if (!verusIdInterface) {
-      setError(_(msg`Unable to verify signature.`))
-      return
-    }
-
-    setError('')
-    setIsProcessing(true)
-
-    // Strip any surrounding quotes from the signature
-    // The regex matches quotes at the start and end of the string
-    const cleanedSignature = signature.trim().replace(/^["']|["']$/g, '')
-
-    try {
-      const verified = await verusIdInterface.verifyMessage(
-        name,
-        cleanedSignature,
-        detailsToSign,
-      )
-
-      if (!verified) {
-        setError(_(msg`Invalid signature. Please try again.`))
-        setIsProcessing(false)
-        return
-      }
-    } catch (e: unknown) {
-      setIsProcessing(false)
-      setError(_(msg`Failed to verify signature. Please try again.`))
-      return
-    }
-
-    try {
-      const accountLink = `${detailsToSign}:${cleanedSignature}`
+  const createLinkingPostMutation = useMutation({
+    mutationFn: async (signature: string) => {
+      const accountLink = formatPostText(signature)
 
       if (!currentAccount) throw new Error('Not signed in')
 
-      // Delete the existing linking post if it exists
+      // Delete the existing linking post if it exists.
       if (linkedVerusID) {
         await deletePost({uri: linkedVerusID.postUri})
       }
 
       const richtext = new RichText({text: accountLink})
 
-      // Create the linking post similar to the Composer
+      // Create the linking post similar to the Composer.
       const postResult = await apilib.post(agent, queryClient, {
         thread: {
           posts: [
@@ -228,31 +157,169 @@ function Inner({
         },
       })
 
-      // Optimistically set the linked VerusID query data to the new link
-      await queryClient.setQueryData(
+      // Optimistically set the linked VerusID query data to the new link.
+      queryClient.setQueryData(
         createLinkedVerusIDQueryKey(currentAccount.did),
         {
           message: detailsToSign,
-          identity: name,
-          signature: cleanedSignature,
+          identity: rfqn,
+          signature,
           postUri: postResult.uris[0],
         },
       )
-
-      // Also invalidate the search posts query used for the linked VerusID query
-      await queryClient.invalidateQueries({
+    },
+    onSuccess: () => {
+      // The linking check uses `search-posts`, so this helps update the linking in the client.
+      void queryClient.invalidateQueries({
         queryKey: ['search-posts'],
       })
+    },
+    onError: (e: unknown) => {
+      logger.warn('Failed to create the account linking post', {error: e})
+    },
+  })
 
-      setStage(Stages.Done)
-    } catch (e: unknown) {
-      setError(
-        _(
-          msg`Failed to create a post for linking the VerusID. Please try again.`,
-        ),
+  // Avoid using useState since some of the stages are driven by either
+  // the response existing or the post working.
+  const getStage = () => {
+    if (createLinkingPostMutation.isSuccess) return Stages.Done
+    if (linkingResponse) return Stages.ConfirmPost
+    if (showAwaitingResponse) return Stages.AwaitingResponse
+    return Stages.Intro
+  }
+  const stage = getStage()
+
+  const onBack = () => {
+    createLinkingPostMutation.reset()
+    setRequest(null)
+    setShowAwaitingResponse(false)
+    setShowRawPost(false)
+  }
+
+  const deeplinkUri = request?.toWalletDeeplinkUri()
+
+  const postText = linkingResponse
+    ? formatPostText(linkingResponse.signature)
+    : ''
+
+  const getError = () => {
+    if (formError) return formError
+    if (isLinkingResponseError) {
+      if (isNetworkError(requestError)) {
+        return l`Unable to contact the service. Please check your Internet connection.`
+      }
+      return cleanError(
+        requestError?.toString() || l`Failed to get the signature`,
       )
+    }
+    if (createLinkingPostMutation.isError) {
+      return l`Failed to create a post for linking the VerusID. Please try again.`
+    }
+    return ''
+  }
+  const error = getError()
+
+  const uiStrings: Record<
+    Stages,
+    {title: string; message: string; detail?: string}
+  > = {
+    Intro: {
+      title: linkedVerusID
+        ? l`Update linked VerusID`
+        : l`Link VerusID to account`,
+      message: linkedVerusID
+        ? l`The VerusID currently linked to this account is ${linkedVerusID.identity}.`
+        : l`Link your VerusID to this account to verify your identity.`,
+    },
+    AwaitingResponse: {
+      title: l`Awaiting confirmation`,
+      message: l`Scan the QR code below or press Open Verus Wallet to sign the linking details with your VerusID ${rfqn}.`,
+    },
+    ConfirmPost: {
+      title: l`Confirm your VerusID link`,
+      message: l`This will publish a public post on your Bluesky account proving that you control ${rfqn}.`,
+      detail: l`Anyone can see it and it stays up until you remove or replace the link.`,
+    },
+    Done: {
+      title: l`Linking complete`,
+      message: l`Your VerusID ${rfqn} has been successfully linked to this account.`,
+    },
+  }
+
+  const onContinue = async () => {
+    if (IS_NATIVE) {
+      setFormError(l`Mobile support coming soon`)
+      return
+    }
+
+    const handle = currentAccount?.handle
+
+    if (!handle || !handle.trim()) {
+      setFormError(l`Unable to link account with no handle.`)
+      return
+    }
+
+    const normalizedRfqn = normalizeVerusIdInput(rfqn)
+
+    if (!normalizedRfqn) {
+      setFormError(l`Please enter a valid VerusID.`)
+      return
+    }
+
+    let identityAddress: string
+    try {
+      identityAddress = processIAddress(normalizedRfqn, DEFAULT_CHAIN)
+    } catch {
+      setFormError(l`Please enter a valid VerusID.`)
+      return
+    }
+
+    setRfqn(normalizedRfqn)
+    setIsProcessing(true)
+
+    try {
+      const details = `${linkIdentifier} 1: controller of VerusID '${normalizedRfqn}' controls ${handle}`
+      const {ordinals} = generateAccountLinkingRequestOrdinals({
+        identityAddress,
+        detailsToSign: details,
+      })
+
+      const signedRequest = await createAndSignGenericRequest(
+        verusIdInterface,
+        ordinals,
+      )
+
+      setFormError('')
+      setDetailsToSign(details)
+      setRequest(signedRequest)
+      setShowAwaitingResponse(true)
+    } catch (e: unknown) {
+      logger.warn('Failed to prepare the account linking request', {error: e})
+      if (isNetworkError(e)) {
+        setFormError(
+          l`Unable to contact the service. Please check your Internet connection.`,
+        )
+      } else if (e instanceof Error) {
+        setFormError(cleanError(e.toString()))
+      } else {
+        setFormError(
+          l`Failed to prepare the linking request. Please try again.`,
+        )
+      }
     } finally {
       setIsProcessing(false)
+    }
+  }
+
+  const onOpenDeeplink = () => {
+    if (!deeplinkUri) return
+
+    if (IS_WEB) {
+      window.location.href = deeplinkUri
+    }
+
+    if (IS_NATIVE) {
+      // TODO: Stub for native.
     }
   }
 
@@ -270,123 +337,188 @@ function Inner({
         <Text style={[a.font_bold, a.text_2xl]}>{uiStrings[stage].title}</Text>
 
         <Text style={[a.text_md, a.leading_snug]}>
-          {stage === Stages.SigningLinking ? (
-            <>
-              <Trans>
-                Copy the details below and sign them as a
-                <Text style={[a.font_semi_bold]}> message </Text>
-                with your VerusID {name}, then paste the signature.
-              </Trans>
-              {'\n'}
-              <Trans>
-                This will create a post linking your VerusID to this account.
-              </Trans>
-            </>
-          ) : (
-            uiStrings[stage].message
-          )}
+          {uiStrings[stage].message}
         </Text>
 
-        {showSettingsMessage && stage === Stages.PreparingLinking && (
+        {uiStrings[stage].detail && (
+          <Text style={[a.text_md, a.leading_snug]}>
+            {uiStrings[stage].detail}
+          </Text>
+        )}
+
+        {showSettingsMessage && stage === Stages.Intro && (
           <Text style={[a.text_md, a.leading_snug]}>
             <Trans>You can do this later in Settings → Verus Services.</Trans>
           </Text>
         )}
-
-        {error ? <Admonition type="error">{error}</Admonition> : null}
       </View>
 
-      {stage === Stages.PreparingLinking ? (
+      {stage === Stages.Intro ? (
         <View style={[a.gap_md]}>
           <View>
             <TextField.LabelText>
-              <Trans>VerusID Name</Trans>
+              <Trans>VerusID</Trans>
             </TextField.LabelText>
             <TextField.Root>
               <TextField.Input
-                label={_(msg`VerusID Name`)}
-                placeholder={_(msg`Alice@`)}
-                value={name}
-                onChangeText={setName}
+                label={l`VerusID`}
+                placeholder={l`Alice@`}
+                defaultValue={rfqn}
+                onChangeText={value => {
+                  setRfqn(value)
+                  if (formError) setFormError('')
+                }}
                 autoCapitalize="none"
                 autoCorrect={false}
               />
             </TextField.Root>
           </View>
         </View>
-      ) : stage === Stages.SigningLinking ? (
+      ) : stage === Stages.AwaitingResponse ? (
+        <>
+          {deeplinkUri && (
+            <View style={[a.align_center, a.py_lg]}>
+              <QrCodeInner link={deeplinkUri} useBackupSVG={false} />
+            </View>
+          )}
+        </>
+      ) : stage === Stages.ConfirmPost ? (
         <View style={[a.gap_md]}>
-          <View>
-            <TextField.LabelText>
-              <Trans>Details to Sign</Trans>
-            </TextField.LabelText>
-            <TextField.Root>
-              <TextField.Input
-                label={_(msg`Details to Sign`)}
-                value={detailsToSign}
-                editable={false}
-                multiline
-                numberOfLines={4}
+          {linkedVerusID && (
+            <Admonition type="warning">
+              <Trans>
+                You already have {linkedVerusID.identity} linked to this
+                account.
+              </Trans>
+            </Admonition>
+          )}
+
+          <View
+            style={[a.border, t.atoms.border_contrast_low, {borderRadius: 18}]}>
+            <Button
+              label={
+                showRawPost
+                  ? l`Hide the raw post contents`
+                  : l`Show the raw post contents`
+              }
+              color="secondary"
+              variant="ghost"
+              size="small"
+              onPress={() => setShowRawPost(!showRawPost)}
+              style={[a.justify_start, showRawPost && t.atoms.bg_contrast_25]}>
+              <ButtonIcon
+                icon={showRawPost ? ChevronTopIcon : ChevronBottomIcon}
               />
-            </TextField.Root>
-          </View>
-          <View>
-            <TextField.LabelText>
-              <Trans>Signature</Trans>
-            </TextField.LabelText>
-            <TextField.Root>
-              <TextField.Input
-                label={_(msg`Signature`)}
-                placeholder={_(msg`Paste your signature here`)}
-                value={signature}
-                onChangeText={setSignature}
-                autoCapitalize="none"
-                autoCorrect={false}
-                multiline
-                numberOfLines={4}
-              />
-            </TextField.Root>
+              <ButtonText>
+                {showRawPost ? (
+                  <Trans>Hide post contents</Trans>
+                ) : (
+                  <Trans>Show what will be posted</Trans>
+                )}
+              </ButtonText>
+            </Button>
+
+            {showRawPost && (
+              <View style={[a.gap_sm, a.p_md]}>
+                <Text style={[a.text_sm, t.atoms.text_contrast_medium]}>
+                  <Trans>
+                    The long text below includes a cryptographic signature,
+                    which is not a secret.
+                  </Trans>
+                </Text>
+                <View style={[a.p_md, a.rounded_sm, t.atoms.bg_contrast_25]}>
+                  <Text selectable>{postText}</Text>
+                </View>
+              </View>
+            )}
           </View>
         </View>
       ) : null}
 
+      {error ? <Admonition type="error">{error}</Admonition> : null}
+
       <View style={[a.gap_sm]}>
-        {stage === Stages.PreparingLinking ? (
+        {stage === Stages.Intro ? (
           <>
             <Button
-              label={_(msg`Prepare linking`)}
+              label={l`Prepare linking`}
               color="primary"
               size="large"
               disabled={isProcessing}
-              onPress={onPrepareLink}>
+              onPress={() => void onContinue()}>
               <ButtonText>
                 <Trans>Continue</Trans>
               </ButtonText>
               {isProcessing && <ButtonIcon icon={Loader} />}
             </Button>
+            {IS_NATIVE && (
+              <Button
+                label={l`Cancel`}
+                color="secondary"
+                size="large"
+                disabled={isProcessing}
+                onPress={() => control.close()}>
+                <ButtonText>
+                  <Trans>Cancel</Trans>
+                </ButtonText>
+              </Button>
+            )}
           </>
-        ) : stage === Stages.SigningLinking ? (
+        ) : stage === Stages.AwaitingResponse ? (
           <>
             <Button
-              label={_(msg`Submit Signature and Create Post`)}
+              label={l`Open account linking deeplink`}
               color="primary"
               size="large"
-              disabled={isProcessing}
-              onPress={() => void onSubmitSignature()}>
+              onPress={onOpenDeeplink}>
               <ButtonText>
-                <Trans>Submit Signature and Create Post</Trans>
+                <Trans>Open Verus Wallet</Trans>
               </ButtonText>
-              {isProcessing && <ButtonIcon icon={Loader} />}
             </Button>
             <Button
-              label={_(msg`Back`)}
+              label={l`Back`}
               color="secondary"
               size="large"
-              disabled={isProcessing}
+              onPress={onBack}>
+              <ButtonText>
+                <Trans>Back</Trans>
+              </ButtonText>
+            </Button>
+          </>
+        ) : stage === Stages.ConfirmPost ? (
+          <>
+            <Button
+              label={
+                createLinkingPostMutation.isError
+                  ? l`Retry publishing the linking post`
+                  : l`Publish the linking post`
+              }
+              color="primary"
+              size="large"
+              disabled={createLinkingPostMutation.isPending}
               onPress={() => {
-                setSignature('')
-                setStage(Stages.PreparingLinking)
+                if (!linkingResponse) return
+                createLinkingPostMutation.mutate(linkingResponse.signature)
               }}>
+              <ButtonText>
+                {createLinkingPostMutation.isError ? (
+                  <Trans>Retry</Trans>
+                ) : linkedVerusID ? (
+                  <Trans>Replace link and publish</Trans>
+                ) : (
+                  <Trans>Publish and link VerusID</Trans>
+                )}
+              </ButtonText>
+              {createLinkingPostMutation.isPending && (
+                <ButtonIcon icon={Loader} />
+              )}
+            </Button>
+            <Button
+              label={l`Back`}
+              color="secondary"
+              size="large"
+              disabled={createLinkingPostMutation.isPending}
+              onPress={onBack}>
               <ButtonText>
                 <Trans>Back</Trans>
               </ButtonText>
@@ -394,7 +526,7 @@ function Inner({
           </>
         ) : stage === Stages.Done ? (
           <Button
-            label={_(msg`Close`)}
+            label={l`Close`}
             color="primary"
             size="large"
             onPress={() => control.close()}>

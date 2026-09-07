@@ -84,23 +84,28 @@ function Inner({onSuccess}: {onSuccess?: () => void}) {
     enabled: showAwaitingResponse && !!request && !!ivk,
   })
 
-  const stage = keys
-    ? Stages.Done
-    : showAwaitingResponse
-      ? Stages.AwaitingResponse
-      : Stages.Intro
+  const getStage = () => {
+    if (keys) return Stages.Done
+    if (showAwaitingResponse) return Stages.AwaitingResponse
+    return Stages.Intro
+  }
+  const stage = getStage()
 
-  const deeplinkUri = request?.toWalletDeeplinkUri() ?? ''
+  const deeplinkUri = request?.toWalletDeeplinkUri()
 
-  const error =
-    localError ||
-    (isError
-      ? isNetworkError(requestError)
-        ? l`Unable to contact the service. Please check your Internet connection.`
-        : cleanError(
-            requestError?.toString() || l`Failed to get encryption keys`,
-          )
-      : '')
+  const getError = () => {
+    if (localError) return localError
+    if (isError) {
+      if (isNetworkError(requestError)) {
+        return l`Unable to contact the service. Please check your Internet connection.`
+      }
+      return cleanError(
+        requestError?.toString() || l`Failed to get encryption keys`,
+      )
+    }
+    return ''
+  }
+  const error = getError()
 
   const uiStrings: Record<
     Stages,
