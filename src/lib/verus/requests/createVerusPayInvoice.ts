@@ -2,24 +2,31 @@ import {
   BigNumber,
   DEST_ID,
   fromBase58Check,
+  GenericRequest,
   TransferDestination,
-  VerusPayInvoice,
   VerusPayInvoiceDetails,
+  VerusPayInvoiceDetailsOrdinalVDXFObject,
 } from 'verus-typescript-primitives'
 import {type VerusIdInterface} from 'verusid-ts-client'
 
-import {LOCAL_DEV_VSKY_SERVER} from '#/lib/constants'
-import {VERUSSKY_CONFIG} from '#/env/verussky'
+import {generateRequestID, isTestnetSystem} from '#/lib/verus/addresses'
 
 const AMOUNT_TO_SATS = 100000000 // 10^8
 const MAX_ESTIMATED_SLIPPAGE = new BigNumber(0.05 * AMOUNT_TO_SATS, 10)
 
-async function createVerusPayInvoice(
-  idInterface: VerusIdInterface,
+/**
+ * Creates an unsigned VerusPay request. Wallets accept VerusPay requests
+ * without a signature, so no signing server is needed.
+ */
+export function createVerusPayInvoiceRequest(
+  verusIdInterface: VerusIdInterface,
   destinationId: string,
   currencyId: string,
   amount?: number,
-): Promise<VerusPayInvoice> {
+): GenericRequest {
+  // Follow the chain of the Verus service in use, not the build default.
+  const isTestnet = isTestnetSystem(verusIdInterface.interface.chain)
+
   const details = new VerusPayInvoiceDetails({
     amount: amount ? new BigNumber(amount * AMOUNT_TO_SATS, 10) : undefined,
     destination: new TransferDestination({
@@ -34,45 +41,15 @@ async function createVerusPayInvoice(
     acceptsAnyAmount: !amount,
     // Conversions aren't allowed for unknown amounts.
     acceptsConversion: !!amount,
-    isTestnet: !VERUSSKY_CONFIG.isMainnet,
+    isTestnet,
   })
 
-  const inv = await idInterface.createVerusPayInvoice(details)
-  return inv
-}
-
-async function signVerusPayInvoice(
-  invoice: VerusPayInvoice,
-): Promise<VerusPayInvoice> {
-  const response = await fetch(
-    `${LOCAL_DEV_VSKY_SERVER}/api/v1/invoices/sign`,
-    {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(invoice.toJson()),
-    },
-  )
-
-  if (!response.ok) {
-    const body = (await response.json()) as {error?: string}
-    throw new Error(body.error || 'Failed to sign invoice')
-  }
-
-  const data = await response.json()
-  return VerusPayInvoice.fromJson(data)
-}
-
-export async function createAndSignVerusPayInvoice(
-  idInterface: VerusIdInterface,
-  destinationId: string,
-  currency: string,
-  amount?: number,
-) {
-  const invoice = await createVerusPayInvoice(
-    idInterface,
-    destinationId,
-    currency,
-    amount,
-  )
-  return await signVerusPayInvoice(invoice)
+  return new GenericRequest({
+    requestID: generateRequestID(),
+    createdAt: new BigNumber((Date.now() / 1000).toFixed(0)),
+    details: [new VerusPayInvoiceDetailsOrdinalVDXFObject({data: details})],
+    flags: isTestnet
+      ? GenericRequest.BASE_FLAGS.or(GenericRequest.FLAG_IS_TESTNET)
+      : GenericRequest.BASE_FLAGS,
+  })
 }
