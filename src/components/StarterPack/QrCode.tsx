@@ -1,7 +1,7 @@
 import {lazy, useState} from 'react'
 import {View} from 'react-native'
 // @ts-expect-error missing types
-import QRCode from 'react-native-qrcode-styled'
+import QRCode, {useQRCodeData} from 'react-native-qrcode-styled'
 import {type ViewShotRef} from 'react-native-view-shot'
 import {Trans} from '@lingui/react/macro'
 
@@ -15,6 +15,15 @@ import {app} from '#/lexicons'
 import * as bsky from '#/types/bsky'
 
 const LazyViewShot = lazy(() => import('react-native-view-shot'))
+
+const QR_SIZE = 225
+const QR_PADDING = 20
+// QRCode's default options, to count the same squares it draws.
+const QR_OPTIONS = {errorCorrectionLevel: 'M'}
+const useQRSquareCount = useQRCodeData as (
+  data: string,
+  options: typeof QR_OPTIONS,
+) => {qrCodeSize: number}
 
 export function QrCode({
   starterPack,
@@ -115,6 +124,16 @@ export function QrCodeInner({
     setLogoArea(area)
   }
 
+  // Long links, like VerusID requests, need more squares. Shrink the squares
+  // so the code stays QR_SIZE wide instead of overflowing on phones.
+  const {qrCodeSize} = useQRSquareCount(link, QR_OPTIONS)
+  const defaultPieceSize = IS_WEB ? 8 : 6
+  const pieceSize = qrCodeSize
+    ? Math.min(defaultPieceSize, (QR_SIZE - 2 * QR_PADDING) / qrCodeSize)
+    : defaultPieceSize
+  // Rounds corners by the same amount relative to the square size.
+  const scale = pieceSize / defaultPieceSize
+
   return (
     <View style={{position: 'relative'}}>
       {/* An SVG version of the logo is placed on top of normal `QRCode` `logo` prop, since the PNG fails to load before the export completes on web. */}
@@ -138,26 +157,26 @@ export function QrCodeInner({
         data={link}
         style={[
           a.rounded_sm,
-          {height: 225, width: 225, backgroundColor: '#f3f3f3'},
+          {height: QR_SIZE, width: QR_SIZE, backgroundColor: '#f3f3f3'},
         ]}
-        pieceSize={IS_WEB ? 8 : 6}
-        padding={20}
-        pieceBorderRadius={IS_WEB ? 4.5 : 3.5}
+        pieceSize={pieceSize}
+        padding={QR_PADDING}
+        pieceBorderRadius={(IS_WEB ? 4.5 : 3.5) * scale}
         outerEyesOptions={{
           topLeft: {
-            borderRadius: [12, 12, 0, 12],
+            borderRadius: [12 * scale, 12 * scale, 0, 12 * scale],
             color: t.palette.primary_500,
           },
           topRight: {
-            borderRadius: [12, 12, 12, 0],
+            borderRadius: [12 * scale, 12 * scale, 12 * scale, 0],
             color: t.palette.primary_500,
           },
           bottomLeft: {
-            borderRadius: [12, 0, 12, 12],
+            borderRadius: [12 * scale, 0, 12 * scale, 12 * scale],
             color: t.palette.primary_500,
           },
         }}
-        innerEyesOptions={{borderRadius: 3}}
+        innerEyesOptions={{borderRadius: 3 * scale}}
         logo={{
           href: require('../../../assets/logo.png'),
           ...(IS_WEB && {
