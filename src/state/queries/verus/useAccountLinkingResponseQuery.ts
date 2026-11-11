@@ -1,6 +1,7 @@
 import {useQuery} from '@tanstack/react-query'
 import {type GenericRequest} from 'verus-typescript-primitives'
 
+import {verifyVerusIdLink} from '#/lib/verus/accountLinking'
 import {
   type AccountLinkingResponse,
   processAccountLinkingResponse,
@@ -42,11 +43,11 @@ export function useAccountLinkingResponseQuery({
 
       const result = processAccountLinkingResponse(request!, response)
 
-      const verified = await verusIdInterface.verifyMessage(
-        rfqn,
-        result.signature,
-        detailsToSign,
-      )
+      const verified = await verifyVerusIdLink(verusIdInterface, {
+        identity: rfqn,
+        message: detailsToSign,
+        signature: result.signature,
+      })
 
       if (!verified) {
         throw new Error('Invalid signature. Please try again.')

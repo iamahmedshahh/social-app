@@ -406,10 +406,12 @@ export const LoginForm = ({
       // Stop polling the old request so its response isn't handled again.
       setLoginId('')
       try {
-        const {ordinals, ivk} = await generateLoginRequestOrdinals()
+        const {ordinals, ivk, encryptResponseToAddress} =
+          await generateLoginRequestOrdinals()
         const signedRequest = await createAndSignGenericRequest(
           verusIdInterface,
           ordinals,
+          {encryptResponseToAddress},
         )
         if (isCancelled) return
 

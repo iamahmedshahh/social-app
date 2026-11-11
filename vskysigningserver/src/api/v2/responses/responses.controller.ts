@@ -1,7 +1,7 @@
 import base64url from 'base64url'
 import {type Request, type Response} from 'express'
 import {
-  GENERIC_ENVELOPE_DEEPLINK_VDXF_KEY,
+  GENERIC_RESPONSE_DEEPLINK_VDXF_KEY,
   GenericResponse,
 } from 'verus-typescript-primitives'
 
@@ -51,7 +51,8 @@ export class ResponsesController {
 
   async receiveRedirect(req: Request, res: Response): Promise<void> {
     try {
-      const responseData = req.query[GENERIC_ENVELOPE_DEEPLINK_VDXF_KEY.vdxfid]
+      // Both wallets put the redirected response under this key.
+      const responseData = req.query[GENERIC_RESPONSE_DEEPLINK_VDXF_KEY.vdxfid]
 
       if (!responseData || typeof responseData !== 'string') {
         res.status(400).send('Missing or invalid response parameter.')
