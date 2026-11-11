@@ -4,11 +4,13 @@ import {Trans, useLingui} from '@lingui/react/macro'
 import {
   Credential,
   DATA_TYPE_OBJECT_CREDENTIAL,
+  type GenericRequest,
   IDENTITY_CREDENTIAL,
   IDENTITY_CREDENTIAL_PLAINLOGIN,
 } from 'verus-typescript-primitives'
 
 import {cleanError, isNetworkError} from '#/lib/strings/errors'
+import {openVerusWallet} from '#/lib/verus/openVerusWallet'
 import {createAndSignGenericRequest} from '#/lib/verus/requests/genericRequest'
 import {
   generateIdentityUpdateRequestOrdinals,
@@ -17,7 +19,6 @@ import {
 import {useVerusServiceUnavailableMessage} from '#/lib/verus/useVerusServiceUnavailableStrings'
 import {logger} from '#/logger'
 import {useVerusService} from '#/state/preferences/verus-service'
-import {useSigningAddressQuery} from '#/state/queries/verus/useSigningServiceInfoQuery'
 import {useVerusIdRequestQuery} from '#/state/queries/verus/useVerusIdRequestQuery'
 import {useVerusServiceStatusQuery} from '#/state/queries/verus/useVerusServiceStatusQuery'
 import {useSession} from '#/state/session'
@@ -31,7 +32,8 @@ import * as TextField from '#/components/forms/TextField'
 import {Loader} from '#/components/Loader'
 import {QrCodeInner} from '#/components/StarterPack/QrCode'
 import {Text} from '#/components/Typography'
-import {IS_NATIVE, IS_WEB} from '#/env'
+import {IS_NATIVE} from '#/env'
+import {VERUSSKY_APP_ID} from '#/env/verussky'
 
 enum Stages {
   UpdateCredentials = 'UpdateCredentials',
@@ -92,8 +94,7 @@ function Inner({initialPassword}: {initialPassword?: string}) {
   const [error, setError] = useState('')
   const [deeplinkUri, setDeeplinkUri] = useState('')
   const requestIdRef = useRef<string>('')
-
-  const {data: signingServiceInfo} = useSigningAddressQuery()
+  const requestRef = useRef<GenericRequest | null>(null)
 
   const {
     data: requestResponse,
@@ -130,9 +131,12 @@ function Inner({initialPassword}: {initialPassword?: string}) {
 
   // Handle the credential update response
   useEffect(() => {
-    if (requestResponse) {
+    if (requestResponse && requestRef.current) {
       try {
-        const txid = processIdentityUpdateResponse(requestResponse)
+        const txid = processIdentityUpdateResponse(
+          requestRef.current,
+          requestResponse,
+        )
 
         if (txid) {
           // Works in this case because the re-render shows the next stage
@@ -199,11 +203,6 @@ function Inner({initialPassword}: {initialPassword?: string}) {
       return
     }
 
-    if (!signingServiceInfo?.signingAddress) {
-      setError(l`Unable to get the signing service identity address`)
-      return
-    }
-
     setError('')
     setIsProcessing(true)
 
@@ -218,7 +217,8 @@ function Inner({initialPassword}: {initialPassword?: string}) {
                 version: Credential.VERSION_CURRENT.toNumber(),
                 credentialkey: IDENTITY_CREDENTIAL_PLAINLOGIN.vdxfid,
                 credential: [email, password],
-                scopes: [signingServiceInfo.signingAddress],
+                // The app signs its own requests, so its ID is the scope.
+                scopes: [VERUSSKY_APP_ID],
               },
             },
           ],
@@ -229,23 +229,17 @@ function Inner({initialPassword}: {initialPassword?: string}) {
         identityJSON,
       })
 
-      if (IS_WEB) {
-        const signedRequest = await createAndSignGenericRequest(
-          verusIdInterface,
-          ordinals,
-        )
+      const signedRequest = await createAndSignGenericRequest(
+        verusIdInterface,
+        ordinals,
+      )
 
-        const requestIdString = signedRequest.requestID!.toAddress()
-        setDeeplinkUri(signedRequest.toWalletDeeplinkUri())
+      const requestIdString = signedRequest.requestID!.toAddress()
+      setDeeplinkUri(signedRequest.toWalletDeeplinkUri())
 
-        requestIdRef.current = requestIdString
-        setStage(Stages.AwaitingResponse)
-      } else if (IS_NATIVE) {
-        // Mobile implementation will be different
-        // This is a placeholder for the actual implementation
-        setError(l`Mobile support coming soon`)
-        setIsProcessing(false)
-      }
+      requestIdRef.current = requestIdString
+      requestRef.current = signedRequest
+      setStage(Stages.AwaitingResponse)
     } catch (e: unknown) {
       const errMsg =
         e instanceof Error ? e.toString() : `Unable to contact the service`
@@ -262,9 +256,14 @@ function Inner({initialPassword}: {initialPassword?: string}) {
     setIsProcessing(false)
   }
 
-  const onOpenDeeplink = () => {
-    if (deeplinkUri) {
-      window.location.href = deeplinkUri
+  const onOpenDeeplink = async () => {
+    if (!deeplinkUri) return
+
+    setError('')
+    try {
+      await openVerusWallet(deeplinkUri)
+    } catch {
+      setError(l`No Verus wallet found. Install Verus Mobile to continue.`)
     }
   }
 
@@ -380,7 +379,7 @@ function Inner({initialPassword}: {initialPassword?: string}) {
               color="primary"
               size="large"
               disabled={isProcessing}
-              onPress={onOpenDeeplink}>
+              onPress={() => void onOpenDeeplink()}>
               <ButtonText>
                 <Trans>Open Verus Wallet</Trans>
               </ButtonText>

@@ -13,6 +13,7 @@ import * as apilib from '#/lib/api/index'
 import {cleanError, isNetworkError} from '#/lib/strings/errors'
 import {shortenLinks} from '#/lib/strings/rich-text-manip'
 import {isIAddress, processIAddress} from '#/lib/verus/addresses'
+import {openVerusWallet} from '#/lib/verus/openVerusWallet'
 import {generateAccountLinkingRequestOrdinals} from '#/lib/verus/requests/accountLinking'
 import {createAndSignGenericRequest} from '#/lib/verus/requests/genericRequest'
 import {useVerusServiceUnavailableMessage} from '#/lib/verus/useVerusServiceUnavailableStrings'
@@ -25,13 +26,13 @@ import {
   createLinkedVerusIDQueryKey,
   useLinkedVerusIDQuery,
 } from '#/state/queries/verus/useLinkedVerusIdQuery'
+import {useVerusServiceStatusQuery} from '#/state/queries/verus/useVerusServiceStatusQuery'
 import {
   useAppviewClient,
   useChatClient,
   usePdsClient,
   useSession,
 } from '#/state/session'
-import {useVerusServiceStatusQuery} from '#/state/queries/verus/useVerusServiceStatusQuery'
 import {useVerusActionsUnavailable} from '#/state/verus-service-status'
 import {atoms as a, useTheme, web} from '#/alf'
 import {Admonition} from '#/components/Admonition'
@@ -46,7 +47,7 @@ import {
 import {Loader} from '#/components/Loader'
 import {QrCodeInner} from '#/components/StarterPack/QrCode'
 import {Text} from '#/components/Typography'
-import {IS_NATIVE, IS_WEB} from '#/env'
+import {IS_NATIVE} from '#/env'
 import {DEFAULT_CHAIN} from '#/env/verussky'
 
 enum Stages {
@@ -267,11 +268,6 @@ function Inner({showSettingsMessage}: {showSettingsMessage?: boolean}) {
   }
 
   const onContinue = async () => {
-    if (IS_NATIVE) {
-      setFormError(l`Mobile support coming soon`)
-      return
-    }
-
     if (serviceStatusUnavailable) {
       setIsProcessing(true)
       const status = await refetchServiceStatus()
@@ -340,15 +336,14 @@ function Inner({showSettingsMessage}: {showSettingsMessage?: boolean}) {
     }
   }
 
-  const onOpenDeeplink = () => {
+  const onOpenDeeplink = async () => {
     if (!deeplinkUri) return
 
-    if (IS_WEB) {
-      window.location.href = deeplinkUri
-    }
-
-    if (IS_NATIVE) {
-      // TODO: Stub for native.
+    setFormError('')
+    try {
+      await openVerusWallet(deeplinkUri)
+    } catch {
+      setFormError(l`No Verus wallet found. Install Verus Mobile to continue.`)
     }
   }
 
@@ -499,7 +494,7 @@ function Inner({showSettingsMessage}: {showSettingsMessage?: boolean}) {
               label={l`Open account linking deeplink`}
               color="primary"
               size="large"
-              onPress={onOpenDeeplink}>
+              onPress={() => void onOpenDeeplink()}>
               <ButtonText>
                 <Trans>Open Verus Wallet</Trans>
               </ButtonText>

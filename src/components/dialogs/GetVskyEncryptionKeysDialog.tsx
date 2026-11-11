@@ -4,6 +4,7 @@ import {Trans, useLingui} from '@lingui/react/macro'
 import {type GenericRequest} from 'verus-typescript-primitives'
 
 import {cleanError, isNetworkError} from '#/lib/strings/errors'
+import {openVerusWallet} from '#/lib/verus/openVerusWallet'
 import {generateEncryptionKeysRequestOrdinals} from '#/lib/verus/requests/encryptionKeys'
 import {createAndSignGenericRequest} from '#/lib/verus/requests/genericRequest'
 import {useEncryptionKeyDialogStrings} from '#/lib/verus/useEncryptionKeyDialogStrings'
@@ -23,7 +24,7 @@ import * as Toggle from '#/components/forms/Toggle'
 import {Loader} from '#/components/Loader'
 import {QrCodeInner} from '#/components/StarterPack/QrCode'
 import {Text} from '#/components/Typography'
-import {IS_NATIVE, IS_WEB} from '#/env'
+import {IS_NATIVE} from '#/env'
 
 enum Stages {
   Intro = 'Intro',
@@ -146,11 +147,6 @@ function Inner({onSuccess}: {onSuccess?: () => void}) {
       }
     }
 
-    if (IS_NATIVE) {
-      setLocalError(l`Mobile support coming soon`)
-      return
-    }
-
     if (currentAccount?.type !== 'vsky') {
       setLocalError(
         l`You must be signed in with a VerusID to get encryption keys.`,
@@ -197,9 +193,14 @@ function Inner({onSuccess}: {onSuccess?: () => void}) {
     }
   }
 
-  const onOpenDeeplink = () => {
-    if (deeplinkUri) {
-      window.location.href = deeplinkUri
+  const onOpenDeeplink = async () => {
+    if (!deeplinkUri) return
+
+    setLocalError('')
+    try {
+      await openVerusWallet(deeplinkUri)
+    } catch {
+      setLocalError(l`No Verus wallet found. Install Verus Mobile to continue.`)
     }
   }
 
@@ -296,8 +297,8 @@ function Inner({onSuccess}: {onSuccess?: () => void}) {
             label={l`Open encryption keys deeplink`}
             color="primary"
             size="large"
-            disabled={isProcessing || !IS_WEB}
-            onPress={onOpenDeeplink}>
+            disabled={isProcessing}
+            onPress={() => void onOpenDeeplink()}>
             <ButtonText>
               <Trans>Open Verus Wallet</Trans>
             </ButtonText>

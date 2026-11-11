@@ -5,7 +5,8 @@ import {useLingui} from '@lingui/react'
 import {Trans} from '@lingui/react/macro'
 
 import {KNOWN_CURRENCY_IDS} from '#/lib/verus/constants'
-import {createAndSignVerusPayInvoice} from '#/lib/verus/requests/createVerusPayInvoice'
+import {openVerusWallet} from '#/lib/verus/openVerusWallet'
+import {createVerusPayInvoiceRequest} from '#/lib/verus/requests/createVerusPayInvoice'
 import {useVerusServiceUnavailableMessage} from '#/lib/verus/useVerusServiceUnavailableStrings'
 import {useVerusService} from '#/state/preferences'
 import {useGetVerusCurrency} from '#/state/queries/verus/useVerusGetCurrencyQuery'
@@ -19,6 +20,7 @@ import * as TextField from '#/components/forms/TextField'
 import * as Toggle from '#/components/forms/Toggle'
 import {QrCodeInner} from '#/components/StarterPack/QrCode'
 import {Text} from '#/components/Typography'
+import {IS_NATIVE} from '#/env'
 
 enum Stage {
   Options = 'Options',
@@ -73,9 +75,11 @@ function Inner({identity}: {identity: string}) {
     },
     QRCode: {
       title: _(msg`Send donation`),
-      message: _(
-        msg`Scan the QR code with your Verus wallet to send the donation.`,
-      ),
+      message: IS_NATIVE
+        ? _(
+            msg`Press Open Verus Wallet to send the donation, or scan the QR code with a wallet on another device.`,
+          )
+        : _(msg`Scan the QR code with your Verus wallet to send the donation.`),
     },
   }
 
@@ -194,14 +198,14 @@ function OptionsStage({
       }
       const destinationId = identityRes.result.identity.identityaddress
 
-      const signedInvoice = await createAndSignVerusPayInvoice(
+      const request = createVerusPayInvoiceRequest(
         verusIdInterface,
         destinationId,
         currencyId,
         amount,
       )
 
-      onReady(signedInvoice.toWalletDeeplinkUri())
+      onReady(request.toWalletDeeplinkUri())
     } catch {
       setError(_(msg`Failed to generate invoice`))
     } finally {
@@ -322,12 +326,36 @@ function QRCodeStage({
   onBack: () => void
 }) {
   const {_} = useLingui()
+  const [error, setError] = useState('')
+
+  const onOpenWallet = async () => {
+    setError('')
+    try {
+      await openVerusWallet(deeplinkUri)
+    } catch {
+      setError(_(msg`No Verus wallet found. Install Verus Mobile to donate.`))
+    }
+  }
 
   return (
     <View style={[a.gap_md]}>
       <View style={[a.align_center, a.py_lg]}>
         <QrCodeInner link={deeplinkUri} useBackupSVG={false} />
       </View>
+
+      {error ? <Admonition type="error">{error}</Admonition> : null}
+
+      {IS_NATIVE && (
+        <Button
+          label={_(msg`Open Verus Wallet`)}
+          color="primary"
+          size="large"
+          onPress={() => void onOpenWallet()}>
+          <ButtonText>
+            <Trans>Open Verus Wallet</Trans>
+          </ButtonText>
+        </Button>
+      )}
 
       <Button
         label={_(msg`Back`)}

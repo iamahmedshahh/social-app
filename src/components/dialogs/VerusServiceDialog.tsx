@@ -44,12 +44,16 @@ function VerusServiceInner() {
   const [system, setSystem] = useState(state.system)
   const [username, setUsername] = useState(state.auth?.username || '')
   const [password, setPassword] = useState(state.auth?.password || '')
+  const [signingIdentity, setSigningIdentity] = useState(
+    state.signingIdentity || '',
+  )
   const [isUpdating, setIsUpdating] = useState(false)
   const [error, setError] = useState('')
 
   const hasChanges =
     url !== state.url ||
     system !== state.system ||
+    signingIdentity.trim() !== (state.signingIdentity || '') ||
     (username !== (state.auth?.username || '') &&
       password !== (state.auth?.password || ''))
 
@@ -91,6 +95,7 @@ function VerusServiceInner() {
                 password,
               }
             : undefined,
+        signingIdentity: signingIdentity.trim() || undefined,
       }
 
       // Check if the Verus service configuration works before saving
@@ -231,6 +236,40 @@ function VerusServiceInner() {
                   autoCapitalize="none"
                   autoCorrect={false}
                   secureTextEntry
+                />
+              </TextField.Root>
+            </View>
+          </View>
+
+          <View style={[a.gap_sm]}>
+            <Text
+              style={[
+                a.text_sm,
+                a.font_semi_bold,
+                t.atoms.text_contrast_medium,
+              ]}>
+              <Trans>Sign requests with your VerusID (Optional)</Trans>
+            </Text>
+            <Text style={[a.text_sm, a.leading_snug]}>
+              <Trans>
+                Enter a VerusID that this service's wallet holds to have the
+                service sign your requests. Your wallet must control the same
+                VerusID. Leave this empty to have VerusSky sign them.
+              </Trans>
+            </Text>
+
+            <View style={[a.gap_xs]}>
+              <TextField.LabelText>
+                <Trans>Signing VerusID</Trans>
+              </TextField.LabelText>
+              <TextField.Root>
+                <Dialog.Input
+                  label={_(msg`Signing VerusID`)}
+                  placeholder={`name@`}
+                  value={signingIdentity}
+                  onChangeText={setSigningIdentity}
+                  autoCapitalize="none"
+                  autoCorrect={false}
                 />
               </TextField.Root>
             </View>
