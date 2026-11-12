@@ -3,11 +3,17 @@ import {Alert} from 'react-native'
 import * as Linking from 'expo-linking'
 import * as WebBrowser from 'expo-web-browser'
 import {Referrer} from '@bsky.app/expo-bluesky-swiss-army'
+import {useLingui} from '@lingui/react/macro'
+import {useQueryClient} from '@tanstack/react-query'
+import {GENERIC_RESPONSE_DEEPLINK_VDXF_KEY} from 'verus-typescript-primitives'
 
 import {useOpenComposer} from '#/lib/hooks/useOpenComposer'
 import {parseLinkingUrl} from '#/lib/parseLinkingUrl'
 import {CHAT_INVITE_CODE_REGEX} from '#/lib/strings/url-helpers'
+import {logger} from '#/logger'
+import {useVerusService} from '#/state/preferences'
 import {usePrefetchJoinLinkPreviews} from '#/state/queries/join-links'
+import {receiveVerusIdRequestResponse} from '#/state/queries/verus/useVerusIdRequestQuery'
 import {useSession} from '#/state/session'
 import {useSetActiveLanding} from '#/state/shell/landing'
 import {useLoggedOutViewControls} from '#/state/shell/logged-out'
@@ -22,7 +28,12 @@ import {
 } from '#/features/trendingWidget/links'
 import {useApplyPullRequestOTAUpdate} from './useOTAUpdates'
 
-type IntentType = 'compose' | 'verify-email' | 'age-assurance' | 'apply-ota'
+type IntentType =
+  | 'compose'
+  | 'verify-email'
+  | 'age-assurance'
+  | 'apply-ota'
+  | 'verusid-response'
 
 const VALID_IMAGE_REGEX = /^[\w.:\-_/]+\|\d+(\.\d+)?\|\d+(\.\d+)?$/
 
@@ -35,6 +46,7 @@ export function useIntentHandler() {
   const composeIntent = useComposeIntent()
   const verifyEmailIntent = useVerifyEmailIntent()
   const groupChatJoinIntent = useGroupChatJoinIntent()
+  const verusIdResponseIntent = useVerusIdResponseIntent()
   const {currentAccount} = useSession()
   const {tryApplyUpdate} = useApplyPullRequestOTAUpdate()
 
@@ -100,6 +112,15 @@ export function useIntentHandler() {
           // Handled in `#/ageAssurance/components/RedirectOverlay.tsx`
           return
         }
+        case 'verusid-response': {
+          // RESPONSE_REDIRECT_URI in `#/lib/verus/requests/genericRequest.ts`
+          const encodedResponse = params.get(
+            GENERIC_RESPONSE_DEEPLINK_VDXF_KEY.vdxfid,
+          )
+          if (!encodedResponse) return
+          verusIdResponseIntent(encodedResponse)
+          return
+        }
         case 'apply-ota': {
           const channel = params.get('channel')
           const releaseVersion = params.get('releaseVersion')
@@ -147,6 +168,7 @@ export function useIntentHandler() {
     composeIntent,
     verifyEmailIntent,
     groupChatJoinIntent,
+    verusIdResponseIntent,
     currentAccount,
     tryApplyUpdate,
   ])
@@ -247,6 +269,32 @@ export function useGroupChatJoinIntent() {
       requestSwitchToAccount,
       setActiveLanding,
     ],
+  )
+}
+
+/**
+ * A wallet on this phone hands a VerusID response back in a link. The open
+ * dialog or sign in screen is waiting for it, so it must stay open.
+ */
+function useVerusIdResponseIntent() {
+  const {t: l} = useLingui()
+  const queryClient = useQueryClient()
+  const {verusIdInterface} = useVerusService()
+  return useCallback(
+    (encodedResponse: string) => {
+      receiveVerusIdRequestResponse({
+        encodedResponse,
+        verusIdInterface,
+        queryClient,
+      }).catch(e => {
+        logger.warn('Failed to receive the VerusID response', {error: e})
+        Alert.alert(
+          l`VerusID`,
+          l`The response from your Verus wallet is not valid. Please try again.`,
+        )
+      })
+    },
+    [l, queryClient, verusIdInterface],
   )
 }
 

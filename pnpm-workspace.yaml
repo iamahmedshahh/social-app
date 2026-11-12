@@ -15,8 +15,8 @@ trustPolicy: 'no-downgrade' # default: off
 trustPolicyIgnoreAfter: 10080 # 7 days, default: undefined
 pmOnFail: download # run the pnpm version pinned in devEngines; package.json keeps onFail: warn because npm/npx read it too
 overrides:
-  '@react-native/babel-preset': '0.88.0'
-  '@react-native/normalize-colors': '0.88.0'
+  '@react-native/babel-preset': '0.88.1'
+  '@react-native/normalize-colors': '0.88.1'
   '@expo/image-utils': '0.12.5'
   '@types/estree': '1.0.6'
   'react-native-reanimated': '4.7.1'
@@ -24,7 +24,7 @@ overrides:
   'psl': '1.9.0'
   '@types/psl': '1.1.1'
   'react-native-screens': '4.30.0'
-  'verus-typescript-primitives': 'git+https://github.com/VerusCoin/verus-typescript-primitives.git#72d477b836538d6c734162b2c069538122263f3b'
+  'verus-typescript-primitives': 'git+https://github.com/VerusCoin/verus-typescript-primitives.git#d5e3068021cfa83e3aae489403f4d63aad0c1a6c'
 allowBuilds:
   '@sentry/cli': true
   '@swc/core': false
@@ -60,7 +60,7 @@ patchedDependencies:
   react-native-safe-area-context@5.10.1: patches/react-native-safe-area-context@5.10.1.patch
   react-native-screens@4.30.0: patches/react-native-screens@4.30.0.patch
   'react-native-svg@15.16.0': patches/react-native-svg@15.16.0.patch
-  react-native@0.88.0: patches/react-native@0.88.0.patch
+  react-native@0.88.1: patches/react-native@0.88.1.patch
   veruszsupportlib: patches/veruszsupportlib.patch
 minimumReleaseAgeExclude:
   - '@atproto/*'

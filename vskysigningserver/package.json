@@ -25,9 +25,9 @@
     "crypto-browserify": "3.12.1",
     "dotenv": "16.4.5",
     "express": "5.1.0",
-    "verus-typescript-primitives": "git+https://github.com/VerusCoin/verus-typescript-primitives",
-    "verusd-rpc-ts-client": "git+https://github.com/VerusCoin/verusd-rpc-ts-client",
-    "verusid-ts-client": "git+https://github.com/VerusCoin/verusid-ts-client"
+    "verus-typescript-primitives": "git+https://github.com/VerusCoin/verus-typescript-primitives.git#d5e3068021cfa83e3aae489403f4d63aad0c1a6c",
+    "verusd-rpc-ts-client": "git+https://github.com/VerusCoin/verusd-rpc-ts-client.git#f3dcd552d6940422e875f8f657ee3d8e2097b37b",
+    "verusid-ts-client": "git+https://github.com/VerusCoin/verusid-ts-client.git#3c5b0fe70f6a67154988c2ecf63b6a4579fe60cb"
   },
   "devDependencies": {
     "@types/cors": "2.8.17",

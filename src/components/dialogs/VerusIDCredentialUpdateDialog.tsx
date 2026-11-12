@@ -219,6 +219,11 @@ function Inner({initialPassword}: {initialPassword?: string}) {
                 credential: [email, password],
                 // The app signs its own requests, so its ID is the scope.
                 scopes: [VERUSSKY_APP_ID],
+                /*
+                 * Name the account, since a VerusID can hold sign ins for
+                 * several.
+                 */
+                label: currentAccount?.handle,
               },
             },
           ],
