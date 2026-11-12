@@ -16,6 +16,7 @@ import {isIAddress, processIAddress} from '#/lib/verus/addresses'
 import {openVerusWallet} from '#/lib/verus/openVerusWallet'
 import {generateAccountLinkingRequestOrdinals} from '#/lib/verus/requests/accountLinking'
 import {createAndSignGenericRequest} from '#/lib/verus/requests/genericRequest'
+import {getServiceSystem} from '#/lib/verus/serviceSystem'
 import {useVerusServiceUnavailableMessage} from '#/lib/verus/useVerusServiceUnavailableStrings'
 import {logger} from '#/logger'
 import {useVerusService} from '#/state/preferences'
@@ -48,7 +49,6 @@ import {Loader} from '#/components/Loader'
 import {QrCodeInner} from '#/components/StarterPack/QrCode'
 import {Text} from '#/components/Typography'
 import {IS_NATIVE} from '#/env'
-import {DEFAULT_CHAIN} from '#/env/verussky'
 
 enum Stages {
   Intro = 'Intro',
@@ -293,7 +293,10 @@ function Inner({showSettingsMessage}: {showSettingsMessage?: boolean}) {
 
     let identityAddress: string
     try {
-      identityAddress = processIAddress(normalizedRfqn, DEFAULT_CHAIN)
+      identityAddress = processIAddress(
+        normalizedRfqn,
+        getServiceSystem(verusIdInterface).chain,
+      )
     } catch {
       setFormError(l`Please enter a valid VerusID.`)
       return

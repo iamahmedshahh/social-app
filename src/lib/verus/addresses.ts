@@ -1,39 +1,47 @@
 import {
   CompactIAddressObject,
   fromBase58Check,
+  I_ADDR_VERSION,
   toBase58Check,
   toIAddress,
 } from 'verus-typescript-primitives'
 
 import {DEFAULT_CHAIN} from '#/env/verussky'
 
-const I_ADDR_VERSION = 102
-
-export function isIAddress(value: string): boolean {
+// Returns the base58check version byte, or undefined if it isn't base58check.
+function getAddressVersion(value: string): number | undefined {
   try {
-    fromBase58Check(value)
-    return true
+    return fromBase58Check(value).version
   } catch {
-    return false
+    return undefined
   }
 }
 
-// Converts an name to an i-address or leaves an i-address unchanged.
+// Only identities are i-addresses, not other base58 addresses like R-addresses.
+export function isIAddress(value: string): boolean {
+  return getAddressVersion(value) === I_ADDR_VERSION
+}
+
+// Converts a name to an i-address or leaves an i-address unchanged.
 export function processIAddress(address: string, chain: string): string {
-  // Check if we have a base58 address, otherwise convert it to base58.
-  try {
-    fromBase58Check(address)
+  const version = getAddressVersion(address)
+
+  if (version === I_ADDR_VERSION) {
     return address
-  } catch {
-    return toIAddress(address, chain)
   }
+
+  if (version !== undefined) {
+    throw new Error(`${address} is not a VerusID name or i-address`)
+  }
+
+  // A sub-ID needs its full name: bob.alice@, since bob@ is a different ID.
+  return toIAddress(address, chain)
 }
 
 export function generateRequestID(): CompactIAddressObject {
   const randID = Buffer.from(crypto.getRandomValues(new Uint8Array(20)))
-  const requestID = CompactIAddressObject.fromAddress(
+  return CompactIAddressObject.fromAddress(
     toBase58Check(randID, I_ADDR_VERSION),
     DEFAULT_CHAIN,
   )
-  return requestID
 }

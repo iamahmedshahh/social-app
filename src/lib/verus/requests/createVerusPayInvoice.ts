@@ -9,7 +9,8 @@ import {
 } from 'verus-typescript-primitives'
 import {type VerusIdInterface} from 'verusid-ts-client'
 
-import {generateRequestID, isTestnetSystem} from '#/lib/verus/addresses'
+import {generateRequestID} from '#/lib/verus/addresses'
+import {getServiceSystem} from '#/lib/verus/serviceSystem'
 
 const AMOUNT_TO_SATS = 100000000 // 10^8
 const MAX_ESTIMATED_SLIPPAGE = new BigNumber(0.05 * AMOUNT_TO_SATS, 10)
@@ -24,8 +25,7 @@ export function createVerusPayInvoiceRequest(
   currencyId: string,
   amount?: number,
 ): GenericRequest {
-  // Follow the chain of the Verus service in use, not the build default.
-  const isTestnet = isTestnetSystem(verusIdInterface.interface.chain)
+  const {isTestnet} = getServiceSystem(verusIdInterface)
 
   const details = new VerusPayInvoiceDetails({
     amount: amount ? new BigNumber(amount * AMOUNT_TO_SATS, 10) : undefined,

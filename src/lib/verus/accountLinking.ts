@@ -1,5 +1,9 @@
+import {SignatureData} from 'verus-typescript-primitives'
 import {type VerusIdInterface} from 'verusid-ts-client'
 
+import {processIAddress} from '#/lib/verus/addresses'
+import {getServiceSystem} from '#/lib/verus/serviceSystem'
+import {createHash} from '#/platform/crypto'
 import {app} from '#/lexicons'
 import * as bsky from '#/types/bsky'
 
@@ -49,17 +53,37 @@ function findVerusIdLink(
   return null
 }
 
-async function verifyVerusIdLink(
+/**
+ * Verus Mobile signs a hash of
+ * the message bound to the identity, system and block height, previous methods such as signing the message directly
+ * dont work
+ */
+export async function verifyVerusIdLink(
   verusIdInterface: VerusIdInterface,
-  link: VerusIdLink,
+  {identity, message, signature}: Omit<VerusIdLink, 'postUri'>,
 ): Promise<boolean> {
   try {
-    const verified = await verusIdInterface.verifyMessage(
-      link.identity,
-      link.signature,
-      link.message,
+    const {chain, systemID} = getServiceSystem(verusIdInterface)
+    const identityID = processIAddress(identity, chain)
+
+    const {version, hashtype, height} = await verusIdInterface.getSignatureInfo(
+      identityID,
+      signature,
+      systemID,
     )
-    return verified
+    const identityHash = new SignatureData({
+      systemID,
+      identityID,
+      signatureHash: createHash('sha256').update(message).digest(),
+    }).getIdentityHash({version, hash_type: hashtype, height})
+
+    return await verusIdInterface.verifyHash(
+      identityID,
+      signature,
+      identityHash,
+      undefined,
+      systemID,
+    )
   } catch (error) {
     console.error('Failed to verify VerusID link:', error)
     throw error
