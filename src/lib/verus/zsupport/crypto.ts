@@ -1,7 +1,16 @@
 /*
- * Stub for native implementation that may use promises.
+ * Native implementation. Runs the same Rust as the web build, through the
+ * React Native package of veruszsupportlibrary.
  */
-import {type DataDescriptor} from 'verus-typescript-primitives'
+import {
+  decryptVData,
+  encryptVData,
+  zGetEncryptionaddress,
+  ZSupportError,
+} from '@veruszsupportlib/react-native-veruszsupport'
+// eslint-disable-next-line import-x/no-nodejs-modules
+import {Buffer} from 'buffer'
+import {DataDescriptor, VdxfUniValue} from 'verus-typescript-primitives'
 
 import {
   type ChannelKeys,
@@ -23,28 +32,135 @@ export type {
   VerusCryptoApi,
 } from './crypto.types'
 
-const NOT_SUPPORTED = 'Verus zsupport crypto is not yet supported on native'
+// The native module takes and returns ArrayBuffers.
+function toArrayBuffer(bytes: Buffer): ArrayBuffer
+function toArrayBuffer(bytes?: Buffer | null): ArrayBuffer | undefined
+function toArrayBuffer(bytes?: Buffer | null): ArrayBuffer | undefined {
+  if (!bytes) {
+    return undefined
+  }
+
+  return Uint8Array.from(bytes).buffer
+}
+
+// Rethrows a native module error as a predifned Rust error.
+function toError(e: unknown): Error {
+  if (e && ZSupportError.instanceOf(e)) {
+    return new Error(e.inner.message)
+  }
+
+  return e instanceof Error ? e : new Error(String(e))
+}
 
 export function zGetEncryptionAddress(
-  _params: DerivationKeys,
+  params: DerivationKeys,
 ): Promise<ChannelKeys> {
-  return Promise.reject(new Error(NOT_SUPPORTED))
+  try {
+    const keys = zGetEncryptionaddress(
+      toArrayBuffer(params.seed),
+      toArrayBuffer(params.spendingKey),
+      params.hdIndex,
+      params.encryptionIndex,
+      toArrayBuffer(params.fromId),
+      toArrayBuffer(params.toId),
+      params.returnSecret ?? false,
+    )
+
+    return Promise.resolve({
+      address: Buffer.from(keys.address),
+      ivk: Buffer.from(keys.ivk),
+      extfvk: Buffer.from(keys.extfvk),
+      spendingKey: keys.spendingKey ? Buffer.from(keys.spendingKey) : null,
+    })
+  } catch (e) {
+    return Promise.reject(toError(e))
+  }
 }
 zGetEncryptionAddress satisfies VerusCryptoApi['zGetEncryptionAddress']
 
-export function encryptData(_params: EncryptParams): Promise<EncryptedPayload> {
-  return Promise.reject(new Error(NOT_SUPPORTED))
+export function encryptData({
+  address,
+  data_to_encrypt,
+  returnSsk,
+}: EncryptParams): Promise<EncryptedPayload> {
+  try {
+    const payload = encryptVData(
+      toArrayBuffer(address),
+      toArrayBuffer(data_to_encrypt),
+      returnSsk ?? false,
+    )
+
+    return Promise.resolve({
+      ephemeralPublicKey: Buffer.from(payload.ephemeralPublicKey),
+      encrypted_data: Buffer.from(payload.encryptedData),
+      symmetricKey: payload.symmetricKey
+        ? Buffer.from(payload.symmetricKey)
+        : null,
+    })
+  } catch (e) {
+    return Promise.reject(toError(e))
+  }
 }
 encryptData satisfies VerusCryptoApi['encryptData']
 
-export function decryptData(_params: DecryptParams): Promise<Buffer> {
-  return Promise.reject(new Error(NOT_SUPPORTED))
+export function decryptData({
+  ivk,
+  epk,
+  data_to_decrypt,
+  ssk,
+}: DecryptParams): Promise<Buffer> {
+  try {
+    return Promise.resolve(
+      Buffer.from(
+        decryptVData(
+          toArrayBuffer(ivk),
+          toArrayBuffer(epk),
+          toArrayBuffer(data_to_decrypt),
+          toArrayBuffer(ssk),
+        ),
+      ),
+    )
+  } catch (e) {
+    return Promise.reject(toError(e))
+  }
 }
 decryptData satisfies VerusCryptoApi['decryptData']
 
-export function decryptDescriptor(
-  _params: DecryptDescriptorParams,
-): Promise<DataDescriptor> {
-  return Promise.reject(new Error(NOT_SUPPORTED))
+// decrypt, then unwrap the DataDescriptor the daemon format carries.
+export async function decryptDescriptor({
+  descriptor,
+  ivk,
+  ssk,
+}: DecryptDescriptorParams): Promise<DataDescriptor> {
+  if (!descriptor.objectdata || descriptor.objectdata.length === 0) {
+    throw new Error('decryptDescriptor: encrypted descriptor has no objectdata')
+  }
+
+  const decrypted = await decryptData({
+    ivk,
+    epk: descriptor.epk,
+    data_to_decrypt: descriptor.objectdata,
+    ssk,
+  })
+
+  // The decrypted bytes are untrusted: anyone can encrypt to a public address.
+  const vdxfValue = new VdxfUniValue()
+  try {
+    vdxfValue.fromBuffer(decrypted, 0)
+  } catch {
+    decrypted.fill(0)
+    throw new Error('decryptDescriptor: decrypted plaintext is malformed')
+  }
+
+  const first = vdxfValue.values[0]
+  const found = first ? Object.values(first)[0] : undefined
+  if (found instanceof DataDescriptor) {
+    return found
+  }
+
+  decrypted.fill(0)
+  throw new Error(
+    'decryptDescriptor: decrypted plaintext does not contain a DataDescriptor',
+  )
 }
 decryptDescriptor satisfies VerusCryptoApi['decryptDescriptor']
