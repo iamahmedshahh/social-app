@@ -47,6 +47,8 @@ export function generateAppEncryptionRequestDetails(
 export interface AppEncryptionRequest {
   ordinal: AppEncryptionRequestOrdinalVDXFObject
   ivk: Buffer
+  // The app's one-time address. The ivk decrypts anything sent to it.
+  encryptResponseToAddress: SaplingPaymentAddress
 }
 
 export async function generateAppEncryptionRequestOrdinal(): Promise<AppEncryptionRequest> {
@@ -67,7 +69,7 @@ export async function generateAppEncryptionRequestOrdinal(): Promise<AppEncrypti
     }),
   })
 
-  return {ordinal, ivk}
+  return {ordinal, ivk, encryptResponseToAddress}
 }
 
 // Finds and decrypts the AppEncryptionDetail from the DataResponseDetails.

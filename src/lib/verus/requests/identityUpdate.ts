@@ -1,4 +1,5 @@
 import {
+  type GenericRequest,
   type GenericResponse,
   IdentityUpdateResponseOrdinalVDXFObject,
   type OrdinalVDXFObject,
@@ -8,6 +9,7 @@ import {
   generateIdentityUpdateRequestOrdinal,
   type IdentityUpdateRequestOptions,
 } from './details/identityUpdateDetail'
+import {assertResponseMatchesRequest} from './genericResponse'
 
 export function generateIdentityUpdateRequestOrdinals(
   options: IdentityUpdateRequestOptions,
@@ -16,8 +18,11 @@ export function generateIdentityUpdateRequestOrdinals(
 }
 
 export function processIdentityUpdateResponse(
+  request: GenericRequest,
   response: GenericResponse,
 ): string | null {
+  assertResponseMatchesRequest(request, response)
+
   // The only ordinal in the response should be for the identity update.
   if (response.details.length <= 0) {
     throw new Error('Found no details in the response')

@@ -15,7 +15,10 @@ import {
   extractDataPacketSignatures,
   generateDataPacketRequestOrdinal,
 } from './details/dataPacketDetail'
-import {buildDataResponseMap} from './genericResponse'
+import {
+  assertResponseMatchesRequest,
+  buildDataResponseMap,
+} from './genericResponse'
 
 export interface AccountLinkingRequestOptions {
   identityAddress: string
@@ -66,6 +69,7 @@ export function processAccountLinkingResponse(
   request: GenericRequest,
   response: GenericResponse,
 ): AccountLinkingResponse {
+  assertResponseMatchesRequest(request, response)
   const dataResponseMap = buildDataResponseMap(response)
 
   const signatures = extractDataPacketSignatures({request, dataResponseMap})

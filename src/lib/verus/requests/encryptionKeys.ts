@@ -16,7 +16,10 @@ import {
   type AuthenticationRequestOptions,
   generateAuthenticationRequestOrdinal,
 } from './details/authDetail'
-import {buildDataResponseMap} from './genericResponse'
+import {
+  assertResponseMatchesRequest,
+  buildDataResponseMap,
+} from './genericResponse'
 
 export interface EncryptionKeysRequestOptions {
   identityAddress: string
@@ -65,6 +68,7 @@ export async function processEncryptionKeysResponse(
   response: GenericResponse,
   ivk: Buffer,
 ): Promise<EncryptionKeysResponse> {
+  assertResponseMatchesRequest(request, response)
   const dataResponseMap = buildDataResponseMap(response)
 
   return extractAppEncryptionKeys({request, dataResponseMap, ivk})
