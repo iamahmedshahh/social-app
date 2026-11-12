@@ -191,6 +191,9 @@ const schema = z.object({
       })
       .optional(),
     system: z.string(),
+    // When set, the service signs requests
+    // as this identity and the VerusSky signing server isn't asked.
+    signingIdentity: z.string().optional(),
   }),
 })
 export type Schema = z.infer<typeof schema>

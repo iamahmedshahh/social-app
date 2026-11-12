@@ -12,7 +12,9 @@ import {checkAndFormatResetCode} from '#/lib/strings/password'
 import {isBlueskyHostedUrl, toNiceHostingUrl} from '#/lib/strings/url-helpers'
 import {createAndSignGenericRequest} from '#/lib/verus/requests/genericRequest'
 import {
+  findLoginCredentials,
   generateLoginRequestOrdinals,
+  type LoginCredentials,
   type LoginResponse,
   processLoginResponse,
 } from '#/lib/verus/requests/login'
@@ -105,6 +107,13 @@ export const LoginForm = ({
   const hasFocusedOnce = useRef(false)
   const vskySessionValueRef = useRef<VskySession>({auth: '', id: '', name: ''})
   const verusIdLoginFailed = useRef(false)
+  /**
+   * The saved sign ins to choose from, when it isn't clear which one is for
+   * the account the user wants.
+   */
+  const [verusIdLoginChoices, setVerusIdLoginChoices] = useState<
+    LoginCredentials[] | null
+  >(null)
   const {t: l} = useLingui()
   const {login} = useSessionApi()
   const {accounts} = useSession()
@@ -390,6 +399,40 @@ export const LoginForm = ({
     await attemptLogin(service, fullIdent, loginPassword)
   }
 
+  /**
+   * Picks the saved sign in to use. An account chosen before signing in, such
+   * as from the account list, must match one by its handle, email or DID.
+   * Otherwise only a single saved sign in is a clear choice.
+   */
+  const pickVerusIdLogin = (saved: LoginCredentials[]) => {
+    const chosen = identifier.trim().toLowerCase()
+    if (!chosen) {
+      return saved.length === 1 ? saved[0] : undefined
+    }
+
+    const account = accounts.find(
+      acc =>
+        acc.handle === chosen ||
+        acc.did === chosen ||
+        acc.email?.toLowerCase() === chosen,
+    )
+    return findLoginCredentials(saved, [
+      chosen,
+      account?.handle,
+      account?.email,
+    ])
+  }
+
+  /** Signs in with one of the VerusID's saved sign ins. */
+  const signInWithVerusIdLogin = (saved: LoginCredentials) => {
+    setVerusIdLoginChoices(null)
+    const credentials = {identifier: saved.username, password: saved.password}
+    // Set the form too, so a 2FA code submits these credentials.
+    setIdentifier(credentials.identifier)
+    setPassword(credentials.password)
+    void onPressNext(credentials)
+  }
+
   useEffect(() => {
     /*
      * Ignore this request once the user switches away or a new request
@@ -405,6 +448,7 @@ export const LoginForm = ({
       setLoginUri('')
       // Stop polling the old request so its response isn't handled again.
       setLoginId('')
+      setVerusIdLoginChoices(null)
       try {
         const {ordinals, ivk, encryptResponseToAddress} =
           await generateLoginRequestOrdinals()
@@ -545,14 +589,14 @@ export const LoginForm = ({
         return
       }
 
-      const credentials = {
-        identifier: result.credentials.username,
-        password: result.credentials.password,
+      const saved = pickVerusIdLogin(result.credentials)
+      if (!saved) {
+        // Let the user choose instead of signing in to the wrong account.
+        setVerusIdLoginChoices(result.credentials)
+        setIsProcessing(false)
+        return
       }
-      // Set the form too, so a 2FA code submits these credentials.
-      setIdentifier(credentials.identifier)
-      setPassword(credentials.password)
-      void onPressNext(credentials)
+      signInWithVerusIdLogin(saved)
     }
 
     void handleLoginResponse()
@@ -592,6 +636,7 @@ export const LoginForm = ({
   const clearVskySession = () => {
     vskySessionValueRef.current = {auth: '', id: '', name: ''}
     verusIdLoginFailed.current = false
+    setVerusIdLoginChoices(null)
   }
 
   /**
@@ -801,6 +846,32 @@ export const LoginForm = ({
             </Toggle.Item>
           </View>
         </>
+      ) : verusIdLoginChoices ? (
+        <View>
+          <TextField.LabelText>
+            <Trans>Choose an account</Trans>
+          </TextField.LabelText>
+          <Text
+            style={[a.mt_xs, a.mb_sm, a.text_sm, t.atoms.text_contrast_medium]}>
+            <Trans>Your VerusID has saved sign ins for these accounts.</Trans>
+          </Text>
+          <View style={[a.gap_sm]}>
+            {verusIdLoginChoices.map(choice => {
+              const accountName = choice.label ?? choice.username
+              return (
+                <Button
+                  key={choice.username}
+                  label={l`Sign in as ${accountName}`}
+                  color="secondary"
+                  size="large"
+                  disabled={isProcessing}
+                  onPress={() => signInWithVerusIdLogin(choice)}>
+                  <ButtonText>{accountName}</ButtonText>
+                </Button>
+              )
+            })}
+          </View>
+        </View>
       ) : (
         <View>
           <TextField.LabelText>
@@ -981,6 +1052,8 @@ export const LoginForm = ({
               }
               color="primary"
               size="large"
+              // Each account choice above signs in instead.
+              disabled={verusIdLoginChoices != null}
               onPress={
                 isVskyDeeplinkButton ? startVskyLogin : () => void onPressNext()
               }>

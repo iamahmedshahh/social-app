@@ -254,7 +254,8 @@ function VerusServiceInner() {
               <Trans>
                 Enter a VerusID that this service's wallet holds to have the
                 service sign your requests. Your wallet must control the same
-                VerusID. Leave this empty to have VerusSky sign them.
+                VerusID. Leave this empty to have VerusSky sign them, your
+                server would not sign requests if you leave this field empty.
               </Trans>
             </Text>
 
