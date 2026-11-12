@@ -1,7 +1,6 @@
 import {
   type AppEncryptionRequestOrdinalVDXFObject,
   type AuthenticationRequestOrdinalVDXFObject,
-  AuthenticationResponseOrdinalVDXFObject,
   Credential,
   DATA_TYPE_OBJECT_CREDENTIAL,
   type DataResponseOrdinalVDXFObject,
@@ -28,7 +27,11 @@ import {
   generateUserDataRequestOrdinal,
   type UserDataRequestOptions,
 } from './details/userDataDetail'
-import {buildDataResponseMap} from './genericResponse'
+import {
+  assertResponseMatchesRequest,
+  buildDataResponseMap,
+  decryptResponseDetails,
+} from './genericResponse'
 
 export interface LoginRequestOptions {
   auth?: AuthenticationRequestOptions
@@ -37,13 +40,15 @@ export interface LoginRequestOptions {
 export interface LoginCredentials {
   username: string
   password: string
+  label?: string
 }
 
 export interface LoginResponse {
   identity: IdentityDefinition
   encryptionKey: SaplingPaymentAddress
   decryptionKey: Buffer
-  credentials?: LoginCredentials
+
+  credentials?: LoginCredentials[]
   credentialError?: string
 }
 
@@ -54,6 +59,9 @@ export interface LoginRequestOrdinals {
     AppEncryptionRequestOrdinalVDXFObject,
   ]
   ivk: Buffer
+  // Wallets must encrypt a reply with credentials. Send it to the same
+  // one-time address as the encryption keys, so the one ivk opens both.
+  encryptResponseToAddress: SaplingPaymentAddress
 }
 
 export async function generateLoginRequestOrdinals(
@@ -71,30 +79,30 @@ export async function generateLoginRequestOrdinals(
 
   const credentialOrdinal = generateUserDataRequestOrdinal(loginCredentials)
 
-  const {ordinal: appEncryptionOrdinal, ivk} =
-    await generateAppEncryptionRequestOrdinal()
+  const {
+    ordinal: appEncryptionOrdinal,
+    ivk,
+    encryptResponseToAddress,
+  } = await generateAppEncryptionRequestOrdinal()
 
   return {
     ordinals: [authentication, credentialOrdinal, appEncryptionOrdinal],
     ivk,
+    encryptResponseToAddress,
   }
 }
 
 export async function processLoginResponse(
   request: GenericRequest,
-  response: GenericResponse,
+  signedResponse: GenericResponse,
   getIdentity: (identity: string) => Promise<VerusGetIdentityQueryResult>,
   ivk: Buffer,
 ): Promise<LoginResponse> {
-  // Just having the auth detail exist is enough for the response to be for signing in.
-  const authOrdinal = response.details.find(
-    (ordinal): ordinal is AuthenticationResponseOrdinalVDXFObject =>
-      ordinal instanceof AuthenticationResponseOrdinalVDXFObject,
-  )
+  assertResponseMatchesRequest(request, signedResponse)
+  // Verus Desktop may answer unencrypted; then this returns it unchanged.
+  const response = await decryptResponseDetails(signedResponse, ivk)
 
-  if (!authOrdinal) {
-    throw new Error('Found no authentication response in the login response')
-  }
+  // remove auth ordinal
 
   // Process the response and details to allow for simple data to the UI.
   const signature = response.signature
@@ -143,10 +151,41 @@ export async function processLoginResponse(
   }
 }
 
+/**
+ * Finds the saved sign in for an account by any of its names, such as its
+ * handle, email or the username it was saved with. Case and a leading @ don't
+ * matter. When several match, the newest wins.
+ */
+export function findLoginCredentials(
+  credentials: LoginCredentials[],
+  accountNames: Array<string | undefined>,
+): LoginCredentials | undefined {
+  const names = new Set(
+    accountNames
+      .filter((name): name is string => !!name?.trim())
+      .map(name => normalizeAccountName(name)),
+  )
+
+  return credentials.findLast(
+    ({username, label}) =>
+      names.has(normalizeAccountName(username)) ||
+      (label != null && names.has(normalizeAccountName(label))),
+  )
+}
+
+function normalizeAccountName(name: string) {
+  return name.trim().toLowerCase().replace(/^@/, '')
+}
+
+/**
+ * Gets every saved sign in from the response. Wallets send all the sign ins
+ * saved for the Linked ID, oldest first. Saving again adds another one instead of
+ * replacing the old one, so only the newest is kept for each username.
+ */
 function extractLoginCredentials(
   request: GenericRequest,
   dataResponseMap: Map<string, DataResponseOrdinalVDXFObject>,
-): LoginCredentials {
+): LoginCredentials[] {
   const userDataRequestID = request.details.find(
     (ordinal): ordinal is UserDataRequestOrdinalVDXFObject =>
       ordinal instanceof UserDataRequestOrdinalVDXFObject,
@@ -174,15 +213,35 @@ function extractLoginCredentials(
     throw new Error('Missing sign in credentials in VerusID response')
   }
 
-  const plainLoginCredential = credentials.find(
+  const plainLoginCredentials = credentials.filter(
     c => c.credentialKey === IDENTITY_CREDENTIAL_PLAINLOGIN.vdxfid,
   )
 
-  if (!plainLoginCredential) {
-    throw new Error('Missing plain login credential in VerusID response')
+  const newestByUsername = new Map<string, LoginCredentials>()
+  let firstError: Error | undefined
+
+  for (const credential of plainLoginCredentials) {
+    try {
+      const login = readPlainLogin(credential)
+      const key = normalizeAccountName(login.username)
+      // Delete first, so that the newest one moves to the end.
+      newestByUsername.delete(key)
+      newestByUsername.set(key, login)
+    } catch (e) {
+      firstError ??= e instanceof Error ? e : new Error(String(e))
+    }
   }
 
-  const plainLogin = plainLoginCredential?.credential
+  if (newestByUsername.size === 0) {
+    throw firstError ?? new Error('Invalid credentials')
+  }
+
+  return [...newestByUsername.values()]
+}
+
+// Reads a plain login credential, which holds [username, password].
+function readPlainLogin(credential: Credential): LoginCredentials {
+  const plainLogin = credential.credential
 
   if (!plainLogin || !Array.isArray(plainLogin) || plainLogin.length < 2) {
     if (!plainLogin || !Array.isArray(plainLogin)) {
@@ -198,5 +257,6 @@ function extractLoginCredentials(
   return {
     username: plainLogin[0],
     password: plainLogin[1],
+    label: credential.label || undefined,
   }
 }
